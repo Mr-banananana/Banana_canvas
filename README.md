@@ -86,6 +86,7 @@ GitHub Pages 可以展示界面预览，但不能直接完成 AI 生成。若要
 
 ## Agnes 默认接入
 
+- Agnes AI 官网：[https://www.agnes-ai.com/](https://www.agnes-ai.com/)
 - Base URL: `https://apihub.agnes-ai.com/v1`
 - 图片生成: `POST /v1/images/generations`
 - 默认图片模型: `agnes-image-2.1-flash`
