@@ -449,16 +449,28 @@ function agnesImageRatio(aspectId = "auto", fallback = "1:1") {
   return supported.has(ratio) ? ratio : fallback;
 }
 
+const COMMERCE_IMAGE_GUARDRAILS = [
+  "商品身份锁定：第一张参考图是唯一权威商品，只允许改变背景、光线和构图，不得重设计、重新建模、拉伸、液化或改变商品比例。",
+  "完整保留商品的外形轮廓、数量、结构、材质、颜色、接口、按键、包装、标识位置和可见细节；不得添加、删除、合并或替换部件。",
+  "模特图和场景图仅用于人物展示方式、环境和光线，不能替换或改造商品；商品要清晰、完整、占主要视觉面积，避免手部遮挡和复杂动作。",
+  "不要生成任何可读文字、中文、英文、数字、字母、标签、标题、logo、水印或界面元素；所有卖点用产品细节、使用动作和构图来表达，并为后期中文排版保留干净留白。"
+].join("\n");
+
+function commerceImagePrompt(prompt) {
+  return [String(prompt || "").trim(), COMMERCE_IMAGE_GUARDRAILS].filter(Boolean).join("\n");
+}
+
 function agnesImageRequest(card, apiKey, prompt, imageRefs = [], imageRoles = []) {
   const model = card.model || settings.imageModel;
   const request = {
     apiKey,
     model,
-    prompt,
+    prompt: card.type === "commerce" ? commerceImagePrompt(prompt) : prompt,
     quality: card.imageQuality || "medium",
     responseFormat: settings.imageResponseFormat,
     imageRefs,
-    imageRoles
+    imageRoles,
+    workflow: card.type || undefined
   };
   if (model === "agnes-image-2.1-flash") {
     request.size = agnesImageSize(card.imageResolution || "1k");
@@ -1984,9 +1996,10 @@ function commerceWorkspacePrompt() {
   if (state.commerceWorkspace.promptMode === "auto") return custom;
   return [
     "Create a polished e-commerce product hero image for online retail.",
-    "Use the first reference image as the exact product and preserve its shape, material, logo, color, and details.",
+    "Use the first reference image as the exact product identity and preserve its shape, proportions, material, logo placement, color, structure, and visible details without redesigning it.",
     "Use model and scene references only when provided, keeping the product as the visual focus.",
-    "Use a single clear commercial composition, premium realistic lighting, natural texture, clean background, and enough negative space for e-commerce copy.",
+    "Use a single clear commercial composition, premium realistic lighting, natural texture, clean background, and enough blank space for Chinese e-commerce copy to be typeset later.",
+    "Express selling points through product details, usage action, lighting, and composition; do not ask the image model to draw readable copy.",
     custom
   ].filter(Boolean).join("\n");
 }
@@ -2174,10 +2187,11 @@ function commercePrompt(card) {
   if (card?.commercePromptMode === "auto") return custom;
   return [
     "Create a polished e-commerce product hero image for online retail.",
-    "Use the first reference image as the exact product and preserve its shape, material, logo, color, and details.",
+    "Use the first reference image as the exact product identity and preserve its shape, proportions, material, logo placement, color, structure, and visible details without redesigning it.",
     "If a model reference is provided, use it for a natural product demonstration while keeping the product as the visual focus.",
     "If a scene reference is provided, borrow its lighting, setting, and visual mood without copying unrelated objects.",
-    "Use clean commercial composition, realistic lighting, premium detail, clear product visibility, and enough negative space for e-commerce copy.",
+    "Use clean commercial composition, realistic lighting, premium detail, clear product visibility, and enough blank space for Chinese e-commerce copy to be typeset later.",
+    "Express selling points through product details, usage action, lighting, and composition; do not ask the image model to draw readable copy.",
     custom
   ].filter(Boolean).join("\n");
 }
