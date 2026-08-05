@@ -1,0 +1,131 @@
+﻿# Banana Canvas 本地 AI 无限画布
+
+一个本地运行的 RunningHub 类 AI 资产构建画布。用户填写自己的 Agnes AI API Key 后，可以在无限画布中生成图片和视频资产。
+
+## 启动
+
+```powershell
+npm start
+```
+
+打开：
+
+```text
+http://localhost:5177
+```
+
+## 小白用户：下载后双击使用
+
+Windows 用户不需要安装 npm，不需要 `npm install`，也不需要命令行：
+
+1. 在 GitHub 点击 `Code > Download ZIP` 并解压。
+2. 确认电脑安装了 Node.js 18 或更高版本；没有安装时，双击 `start.bat` 会自动打开官方安装页面。
+3. 双击项目根目录的 `start.bat`。
+4. 浏览器会自动打开 `http://localhost:5177/`，然后在右上角 `API 设置` 中填写自己的 Agnes API Key。
+
+服务窗口需要保持打开；要停止服务，关闭名为 `Banana Canvas Server` 的窗口即可。PowerShell 用户也可以运行 `start.ps1`。
+
+项目没有第三方 npm 依赖，下载并解压后即可启动。
+
+### macOS 用户
+
+1. 下载并解压 ZIP，确认电脑安装了 Node.js 18 或更高版本。
+2. 双击 `start.command`。
+3. 如果 macOS 阻止第一次打开，在文件上点击右键，选择“打开”；或者在终端执行：
+
+   ```bash
+   chmod +x start.command start.sh
+   ./start.command
+   ```
+
+终端会自动启动服务并打开浏览器。关闭该终端窗口即可停止服务。
+
+## 发布到 GitHub 并公开使用
+
+这个项目包含 Node.js 代理服务，不能只部署到 GitHub Pages。GitHub Pages 只能提供静态文件，无法处理 `/api/agnes/*` 和 `/api/custom` 请求；公开部署请使用 Render、Railway、Fly.io 或任意支持 Node.js 的服务。
+
+### 推荐：GitHub + Render
+
+1. 在 GitHub 新建一个公开仓库，把本项目所有文件上传进去。
+2. 登录 Render，选择 **New > Web Service**，连接这个 GitHub 仓库。
+3. 使用以下配置：
+
+   - Runtime：`Node`
+   - Build Command：`npm install --omit=dev`
+   - Start Command：`npm start`
+   - Health Check Path：`/healthz`
+
+4. 部署完成后，打开 Render 分配的 `https://xxxxx.onrender.com` 地址。
+5. 在页面右上角 `API 设置` 中填写自己的 Agnes API Key，即可开始生成图片和视频。
+
+仓库已经包含 `render.yaml`，也可以在 Render 中直接使用 Blueprint 部署。`Dockerfile` 可用于其他云平台或自己的服务器。
+
+### API Key 安全说明
+
+- 不要把 API Key 写入 README、源码、`.env` 或 GitHub Actions 日志。
+- 当前页面只把 API Key 保存在浏览器 `sessionStorage`，不会写入项目文件。
+- `server.js` 只在请求转发期间使用 API Key，不会持久化保存。
+- 公开部署后，生成请求会经过你部署的 Node 服务，再转发到 Agnes；请使用自己的域名、限流和访问控制保护公共实例。
+
+### GitHub Pages 的限制
+
+GitHub Pages 可以展示界面预览，但不能直接完成 AI 生成。若要使用完整功能，必须让页面和 `server.js` 部署在同一个 Node 服务域名下，或者另外配置一个可访问的 API 代理。
+
+## 操作习惯
+
+- 点击左侧 `＋` 打开“添加节点”面板。`?` 或顶部“操作说明”可打开快捷键说明。
+- 可添加文本、图片、视频和上传资源节点；未实现的剪辑/导演台/3D/音频等占位功能已从界面移除。
+- 每个节点左侧是输入端口，右侧是输出端口。
+- 点击节点后会在节点附近弹出操作栏，可编辑提示词、模型、比例/分辨率并提交生成。
+- 从一个节点右侧输出端口拖到另一个节点左侧输入端口即可建立连线。
+- 文本节点连到图片或视频节点时，会作为生成提示词上游输入。
+- 图片/上传资产节点连到图片或视频节点时，会作为参考图输入。
+- 在画布内点击鼠标右键会打开自定义菜单，可上传、添加节点、复制、粘贴和删除，不会弹出浏览器原生菜单。
+- 生成完成后会自动创建结果资产节点，并和生成节点连线；同一个节点多次生成时，结果节点会自动错开排列，不会互相覆盖。
+- 点击左侧 `＋`，在“添加节点”面板中选择“电商宣传图”：上传商品图（必填），可选上传模特图和场景图。可以开启“Agnes 自动写提示词”，先根据参考图生成可编辑提示词，再点击生成宣传图；也可以关闭开关直接手写提示词。每个电商节点独立保存自己的素材，每次成功都会新增一个独立的宣传图节点。
+
+## Agnes 默认接入
+
+- Base URL: `https://apihub.agnes-ai.com/v1`
+- 图片生成: `POST /v1/images/generations`
+- 默认图片模型: `agnes-image-2.1-flash`
+- 自动提示词模型: `agnes-2.0-flash`，请求 `POST /v1/chat/completions`
+- 视频生成: `POST /v1/videos`
+- 默认视频模型: `agnes-video-v2.0`
+- 视频轮询: `GET https://apihub.agnes-ai.com/agnesapi?video_id=<VIDEO_ID>`
+- 默认轮询间隔: 12 秒；遇到 429 状态查询限流时会自动退避继续查询，不会把任务标记为失败。
+
+API Key 只保存在浏览器 `sessionStorage`，不会写入项目源码。
+
+如果本机通过代理访问外网，`server.js` 会自动读取 `HTTPS_PROXY`/`HTTP_PROXY`。例如：
+
+```powershell
+$env:HTTPS_PROXY = "http://127.0.0.1:7892"
+npm start
+```
+
+## 当前功能
+
+- 深色点阵无限画布，香蕉黄/绿色视觉主题。
+- 节点平移、画布拖拽、滚轮上下平移；缩放使用左下角按钮或 `Ctrl +/-`。
+- 节点输入/输出端口连线。
+- 文本、图片生成、视频生成、上传资产卡。
+- RunningHub 风格操作说明弹窗与画布右键菜单。
+- 图片文生图、图生图、多参考图生成。
+- 视频文生视频、图生视频、多关键帧视频生成。
+- Agnes 视频异步任务轮询。
+- 画布 JSON 导入/导出，包含节点和连线。
+- 自定义 API 高级配置。
+- 电商宣传图内置工作流，支持商品图、模特图和场景图作为角色化参考输入。
+- 电商工作台支持 Agnes 多模态自动写提示词或手动提示词两种模式。自动模式会识别产品并提炼卖点、特色和使用场景，生成一张单屏电商海报提示词；结果会回填并允许编辑，不可确认的参数不会由模型臆造。
+- Agnes Image 2.1 使用标准 `1K/2K/4K + ratio` 请求，电商宣传图默认使用 `2K + 3:4`，并以单张清晰主视觉表达卖点，禁止多屏、九宫格和不可读小字。
+
+## 不包含
+
+- 剪辑器。
+- 导演台。
+- 多用户协作。
+- 云端账号或项目管理。
+
+电商宣传图工作流只在当前浏览器中读取和保存图片 Data URL，`server.js` 不会永久保存用户上传图片；生成请求仍会发送到用户在 API 设置中选择的 Agnes 或自定义 API。
+

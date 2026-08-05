@@ -1,0 +1,13 @@
+node_modules/
+.git/
+.gitignore
+.env
+.env.*
+outputs/
+docs/
+work/
+*.log
+start.bat
+start.ps1
+start.command
+start.sh

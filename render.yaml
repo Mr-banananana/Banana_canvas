@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: banana-canvas
+    runtime: node
+    plan: free
+    buildCommand: npm install --omit=dev
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production

@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Banana Canvas</title>
+    <link rel="stylesheet" href="/styles.css?v=toolbar-canvas-1">
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">🍌</div>
+          <div>
+            <h1>Banana Canvas</h1>
+            <p id="saveState">已保存到本地</p>
+          </div>
+        </div>
+        <div class="top-actions">
+          <button id="zoomOut" class="icon-btn" title="缩小">-</button>
+          <span id="zoomLabel" class="zoom-label">100%</span>
+          <button id="zoomIn" class="icon-btn" title="放大">+</button>
+          <button id="fitView" class="text-btn">适配</button>
+          <button id="openShortcuts" class="text-btn">操作说明</button>
+          <button id="exportJson" class="text-btn">导出</button>
+          <label class="text-btn file-label">
+            导入
+            <input id="importJson" type="file" accept="application/json">
+          </label>
+          <button id="openSettings" class="primary-btn">API 设置</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="toolbar" aria-label="工具栏">
+          <button class="tool add-tool" id="addNodeButton" title="添加节点">＋</button>
+          <button class="tool return-canvas-tool active" id="returnCanvasTool" data-tool="canvas" title="返回画布">⌂<span>画布</span></button>
+          <button class="tool commerce-tool" id="commerceTool" data-tool="commerce" title="电商工作台">🍌<span>电商</span></button>
+          <button class="tool commerce-tool video-tool" id="productVideoTool" data-tool="product-video" title="产品视频">▶<span>产品视频</span></button>
+          <button class="tool" id="shortcutTool" title="操作说明">?</button>
+          <input id="uploadInput" type="file" accept="image/*,video/*" multiple>
+        </aside>
+
+        <section id="canvasViewport" class="canvas-viewport">
+          <section id="nodePalette" class="node-palette hidden" aria-label="添加节点">
+            <h2>添加节点</h2>
+            <button data-create="text"><span>T</span><strong>文本</strong><em>脚本、广告词、品牌文案</em></button>
+            <button data-create="image"><span>▧</span><strong>图片</strong><em>文生图、图生图、多图参考</em></button>
+            <button data-create="video"><span>▶</span><strong>视频</strong><em>文生视频、图生视频</em></button>
+            <h3>添加资源</h3>
+            <button id="paletteUpload"><span>↑</span><strong>上传</strong><em>图片或视频参考资产</em></button>
+          </section>
+
+          <nav id="contextMenu" class="context-menu hidden" aria-label="右键菜单">
+            <button data-action="upload"><strong>上传</strong></button>
+            <button data-action="add"><strong>添加节点</strong></button>
+            <hr>
+            <button data-action="copy-selected"><strong>复制所选节点</strong><span>Ctrl+C</span></button>
+            <button data-action="copy-all"><strong>复制所有节点</strong></button>
+            <button data-action="paste"><strong>粘贴</strong><span>Ctrl+V</span></button>
+            <button data-action="delete"><strong>删除所选节点</strong><span>Delete</span></button>
+          </nav>
+
+          <section id="connectionCreateMenu" class="connection-create-menu hidden" aria-label="连线创建节点菜单">
+            <h2>引用该节点生成</h2>
+            <button data-chain-create="text"><span>T</span><strong>文本</strong><em>继续编写提示词</em></button>
+            <button data-chain-create="image"><span>▧</span><strong>图片</strong><em>用上游内容生成图片</em></button>
+            <button data-chain-create="video"><span>▶</span><strong>视频</strong><em>用上游内容生成视频</em></button>
+            <button data-chain-create="upload"><span>↑</span><strong>上传资源</strong><em>补充图片或视频参考</em></button>
+          </section>
+
+          <div class="canvas-help" id="emptyHint">
+            <strong>添加节点并拖线连接输入输出</strong>
+            <span>文本连到图片/视频作为提示词，图片连到图片/视频作为参考素材。</span>
+          </div>
+          <div id="canvasStage" class="canvas-stage"></div>
+
+          <aside id="nodeControlDock" class="node-control-dock hidden" aria-label="节点操作面板">
+            <div id="inspectorEmpty" class="empty-panel hidden">
+              选择一个节点查看参数。拖动节点右侧输出点到另一个节点左侧输入点即可建立工作流连接。
+            </div>
+            <div id="inspectorForm" class="inspector-form dock-form hidden">
+              <div class="dock-topline">
+                <input id="cardTitle" class="dock-title" type="text" aria-label="节点名称">
+                <div class="dock-tools">
+                  <button id="deleteCard" class="dock-tool danger" type="button" title="删除节点"><span>×</span><em>删除</em></button>
+                </div>
+              </div>
+
+              <label id="genericPromptLine" class="prompt-line">
+                <span>描述你想要生成的内容；参考图请通过节点连线输入，按 Enter 生成</span>
+                <textarea id="cardPrompt" rows="2"></textarea>
+              </label>
+
+              <div id="generationFields" class="dock-generation">
+                <div class="dock-selects">
+                  <label>
+                    <span>模型</span>
+                    <select id="cardModel"></select>
+                  </label>
+                  <div id="sizePicker" class="size-picker">
+                    <span class="field-caption">比例 / 质量 / 分辨率</span>
+                    <button id="sizePickerButton" class="size-trigger" type="button">自适应 / 中 / 1k</button>
+                    <div id="sizePickerMenu" class="size-popover" aria-label="生成参数菜单"></div>
+                    <select id="cardSize" class="hidden-select" tabindex="-1" aria-hidden="true">
+                      <option value="1024x768">自适应 / 中 / 1k</option>
+                    </select>
+                  </div>
+                  <label class="negative-field">
+                    <span>反向提示词</span>
+                    <input id="negativePrompt" type="text" placeholder="不需要可留空">
+                  </label>
+                </div>
+
+                <div id="videoFields" class="dock-video-fields">
+                  <label><span>帧数</span><input id="videoFrames" type="number" min="9" max="441" step="8"></label>
+                  <label><span>帧率</span><input id="videoFps" type="number" min="1" max="60"></label>
+                </div>
+
+                <div class="dock-actions">
+                  <button id="generateBtn" class="run-btn" type="button" title="生成资产"><span>生成资产</span><strong>↑</strong></button>
+                </div>
+
+                <div class="refs dock-refs">
+                  <div class="refs-title">参考图片 / 上游输入</div>
+                  <div id="referenceList" class="reference-list"></div>
+                </div>
+                <div id="statusBox" class="status-box"></div>
+              </div>
+              <div id="resultBox" class="result-box"></div>
+            </div>
+          </aside>
+        </section>
+
+        <section id="commerceWorkspace" class="commerce-workspace hidden" aria-label="电商宣传图工作台">
+          <div class="commerce-workspace-form">
+            <div class="commerce-workspace-heading">
+              <span class="workflow-kicker">BANANA COMMERCE STUDIO</span>
+              <h2>电商宣传图</h2>
+              <p>上传商品图，补充模特或场景参考，生成可直接用于电商页面的主视觉。</p>
+            </div>
+
+            <div class="commerce-workspace-section">
+              <div class="section-label"><strong>参考图片</strong><span>商品图必填，其余可选</span></div>
+              <div class="commerce-workspace-slots">
+                <button class="commerce-workspace-slot required" type="button" data-commerce-workspace-slot="product">
+                  <span class="slot-media">＋</span><strong>商品图</strong><em>必填</em>
+                </button>
+                <button class="commerce-workspace-slot" type="button" data-commerce-workspace-slot="model">
+                  <span class="slot-media">＋</span><strong>模特图</strong><em>可选</em>
+                </button>
+                <button class="commerce-workspace-slot" type="button" data-commerce-workspace-slot="scene">
+                  <span class="slot-media">＋</span><strong>场景图</strong><em>可选</em>
+                </button>
+              </div>
+              <input id="commerceWorkspaceUploadInput" type="file" accept="image/*">
+            </div>
+
+            <div class="commerce-workspace-section prompt-section">
+              <div class="section-label"><strong>生成提示词</strong><span>自动生成后仍可编辑</span></div>
+              <div class="workspace-prompt-tools">
+                <label class="commerce-mode-switch">
+                  <input id="commerceWorkspacePromptMode" type="checkbox">
+                  <span class="switch-track" aria-hidden="true"><span></span></span>
+                  <span><strong>Agnes 自动写提示词</strong><em>提炼卖点、特色和使用场景</em></span>
+                </label>
+                <button id="commerceWorkspacePromptButton" class="commerce-prompt-generate" type="button">Agnes 写提示词</button>
+              </div>
+              <textarea id="commerceWorkspacePrompt" class="workspace-prompt" rows="8" placeholder="描述商品卖点、目标用户、使用场景和画面要求"></textarea>
+            </div>
+
+            <div class="commerce-workspace-section workspace-options">
+              <label><span>比例</span><select id="commerceWorkspaceAspect"><option value="3:4">3:4 商品详情</option><option value="1:1">1:1 方图</option><option value="4:3">4:3 横图</option><option value="16:9">16:9 横幅</option><option value="9:16">9:16 竖图</option></select></label>
+              <label><span>质量</span><select id="commerceWorkspaceQuality"><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></label>
+              <label><span>分辨率</span><select id="commerceWorkspaceResolution"><option value="2k">2K</option><option value="1k">1K</option><option value="4k">4K</option></select></label>
+            </div>
+            <div id="commerceWorkspaceStatus" class="commerce-workspace-status" role="status"></div>
+            <button id="commerceWorkspaceGenerate" class="commerce-workspace-generate" type="button"><span>生成宣传图</span><strong>↑</strong></button>
+          </div>
+
+          <div class="commerce-workspace-results">
+            <div class="commerce-results-head"><div><span class="workflow-kicker">TEMPORARY ASSETS</span><h2>临时资产库</h2></div><span id="commerceAssetCount">0 个结果</span></div>
+            <div id="commerceAssetLibrary" class="commerce-asset-library"><div id="commerceAssetGrid" class="commerce-asset-grid"></div></div>
+          </div>
+        </section>
+
+        <section id="productVideoWorkspace" class="commerce-workspace product-video-workspace hidden" aria-label="产品视频工作台">
+          <div class="commerce-workspace-form">
+            <div class="commerce-workspace-heading">
+              <span class="workflow-kicker">BANANA PRODUCT VIDEO</span>
+              <h2>产品视频</h2>
+              <p>上传产品图，生成一条连续、清晰、适合电商使用的产品宣传视频。</p>
+            </div>
+
+            <div class="commerce-workspace-section">
+              <div class="section-label"><strong>产品图片</strong><span>必填，仅支持图片</span></div>
+              <button class="commerce-workspace-slot required product-video-slot" type="button" data-product-video-slot="product">
+                <span class="slot-media">＋</span><strong>上传产品图</strong><em>必填</em>
+              </button>
+              <input id="productVideoUploadInput" type="file" accept="image/*">
+            </div>
+
+            <div class="commerce-workspace-section prompt-section">
+              <div class="section-label"><strong>镜头提示词</strong><span>可留空使用默认镜头</span></div>
+              <textarea id="productVideoPrompt" class="workspace-prompt" rows="7" placeholder="例如：镜头缓慢环绕产品，展示材质细节和使用方式，保持背景干净"></textarea>
+            </div>
+
+            <div class="commerce-workspace-section workspace-options product-video-options">
+              <label><span>比例</span><select id="productVideoAspect"><option value="16:9">16:9 横屏</option><option value="9:16">9:16 竖屏</option><option value="1:1">1:1 方形</option><option value="3:4">3:4 竖图</option><option value="4:3">4:3 横图</option><option value="auto">自适应</option></select></label>
+              <label><span>分辨率</span><select id="productVideoResolution"><option value="480p">480p</option><option value="720p">720p</option><option value="1080p">1080p</option></select></label>
+              <label><span>时长</span><select id="productVideoDuration"><option value="4">4 秒</option><option value="5" selected>5 秒</option><option value="6">6 秒</option><option value="8">8 秒</option></select></label>
+              <label><span>帧率</span><select id="productVideoFps"><option value="24" selected>24 fps</option><option value="30">30 fps</option></select></label>
+              <label><span>生成音频</span><select id="productVideoAudio"><option value="false" selected>否</option><option value="true">是</option></select></label>
+            </div>
+            <div id="productVideoStatus" class="commerce-workspace-status" role="status"></div>
+            <button id="productVideoGenerate" class="commerce-workspace-generate" type="button"><span>生成产品视频</span><strong>↑</strong></button>
+          </div>
+
+          <div class="commerce-workspace-results">
+            <div class="commerce-results-head"><div><span class="workflow-kicker">TEMPORARY VIDEO ASSETS</span><h2>临时资产库</h2></div><span id="productVideoAssetCount">0 个结果</span></div>
+            <div id="productVideoAssetLibrary" class="commerce-asset-library"><div id="productVideoAssetGrid" class="commerce-asset-grid"></div></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="settingsModal" class="modal-backdrop hidden">
+      <section class="modal">
+        <div class="modal-head">
+          <div>
+            <h2>API 设置</h2>
+            <p>默认接入 Agnes AI。API Key 仅保存在当前浏览器会话中。</p>
+          </div>
+          <button id="closeSettings" class="icon-btn">×</button>
+        </div>
+        <div class="settings-grid">
+          <label>
+            Provider
+            <select id="provider">
+              <option value="agnes">Agnes AI 推荐</option>
+              <option value="custom">自定义 API</option>
+            </select>
+          </label>
+          <label>
+            API Key
+            <input id="apiKey" type="password" placeholder="Bearer token">
+          </label>
+          <label>
+            图片模型
+            <select id="imageModel">
+              <option value="agnes-image-2.1-flash">agnes-image-2.1-flash</option>
+              <option value="agnes-image-2.0-flash">agnes-image-2.0-flash</option>
+            </select>
+          </label>
+          <label>
+            提示词模型
+            <input id="promptModel" type="text" value="agnes-2.0-flash">
+          </label>
+          <label>
+            视频模型
+            <input id="videoModel" type="text" value="agnes-video-v2.0">
+          </label>
+          <label>
+            图片返回
+            <select id="imageResponseFormat">
+              <option value="url">URL</option>
+              <option value="b64_json">Base64</option>
+            </select>
+          </label>
+          <label>
+            轮询间隔
+            <select id="pollInterval">
+              <option value="12000">12 秒</option>
+              <option value="20000">20 秒</option>
+              <option value="30000">30 秒</option>
+            </select>
+          </label>
+        </div>
+        <details class="advanced">
+          <summary>自定义 API 高级设置</summary>
+          <label>
+            Endpoint
+            <input id="customEndpoint" type="url" placeholder="https://api.example.com/v1/generate">
+          </label>
+          <label>
+            Method
+            <select id="customMethod">
+              <option value="POST">POST</option>
+              <option value="GET">GET</option>
+            </select>
+          </label>
+          <label>
+            Body Template JSON
+            <textarea id="customBody" rows="8">{
+  "model": "{{model}}",
+  "prompt": "{{prompt}}"
+}</textarea>
+          </label>
+          <label>
+            结果字段路径
+            <input id="customResultPath" type="text" placeholder="data.0.url">
+          </label>
+        </details>
+        <div class="modal-actions">
+          <a href="https://agnes-ai.com/zh-Hans/docs/overview" target="_blank" rel="noreferrer">Agnes 文档</a>
+          <button id="saveSettings" class="primary-btn">保存设置</button>
+        </div>
+      </section>
+    </div>
+
+    <div id="shortcutsModal" class="modal-backdrop hidden">
+      <section class="shortcuts-modal" aria-labelledby="shortcutsTitle">
+        <button id="closeShortcuts" class="shortcut-close" aria-label="关闭操作说明">×</button>
+        <header class="shortcuts-head">
+          <div>
+            <h2 id="shortcutsTitle">操作说明</h2>
+            <p>只保留当前已经实现的画布、节点、生成和文件操作。</p>
+          </div>
+          <span class="mode-pill">画布模式</span>
+        </header>
+
+        <div class="quick-actions" aria-label="快速操作">
+          <button type="button" id="shortcutAddNode"><strong>添加节点</strong><span>打开节点面板</span></button>
+          <button type="button" id="shortcutUpload"><strong>上传资源</strong><span>图片 / 视频</span></button>
+          <button type="button" id="shortcutFit"><strong>适配画布</strong><span>查看全部节点</span></button>
+          <button type="button" id="shortcutSettings"><strong>API 设置</strong><span>填写 Key</span></button>
+        </div>
+
+        <div class="shortcut-grid">
+          <section>
+            <h3>画布视图</h3>
+            <div class="shortcut-row"><strong>放大</strong><span><kbd>Ctrl</kbd><kbd>+</kbd></span></div>
+            <div class="shortcut-row"><strong>缩小</strong><span><kbd>Ctrl</kbd><kbd>-</kbd></span></div>
+            <div class="shortcut-row"><strong>适配画布</strong><span><kbd>Ctrl</kbd><kbd>0</kbd></span></div>
+            <div class="shortcut-row"><strong>滚轮平移</strong><span>鼠标滚轮上下移动画布</span></div>
+            <div class="shortcut-row"><strong>框选节点</strong><span>拖动画布空白处</span></div>
+            <div class="shortcut-row"><strong>移动画布</strong><span>鼠标中键拖动</span></div>
+          </section>
+          <section>
+            <h3>节点工作流</h3>
+            <div class="shortcut-row"><strong>移动节点</strong><span>拖动节点主体</span></div>
+            <div class="shortcut-row"><strong>连接节点</strong><span>从右侧端口拖到左侧端口</span></div>
+            <div class="shortcut-row"><strong>引用参考图</strong><span>图片或上传资产节点连到生成节点</span></div>
+            <div class="shortcut-row"><strong>拖线新建</strong><span>输出端口拖到空白处</span></div>
+          </section>
+          <section>
+            <h3>编辑与生成</h3>
+            <div class="shortcut-row"><strong>电商宣传图</strong><span>添加节点面板，商品图必填</span></div>
+            <div class="shortcut-row"><strong>生成资产</strong><span><kbd>Enter</kbd></span></div>
+            <div class="shortcut-row"><strong>提示词换行</strong><span><kbd>Shift</kbd><kbd>Enter</kbd></span></div>
+            <div class="shortcut-row"><strong>删除节点</strong><span><kbd>Delete</kbd><span>/</span><kbd>Backspace</kbd></span></div>
+            <div class="shortcut-row"><strong>打开右键菜单</strong><span>鼠标右键</span></div>
+          </section>
+          <section>
+            <h3>复制与文件</h3>
+            <div class="shortcut-row"><strong>复制所选节点</strong><span><kbd>Ctrl</kbd><kbd>C</kbd></span></div>
+            <div class="shortcut-row"><strong>粘贴节点</strong><span><kbd>Ctrl</kbd><kbd>V</kbd></span></div>
+            <div class="shortcut-row"><strong>上传资源</strong><span>左侧上传 / 右键上传</span></div>
+            <div class="shortcut-row"><strong>导入导出</strong><span>顶部导入 / 导出 JSON</span></div>
+          </section>
+        </div>
+      </section>
+    </div>
+
+    <script src="/app.js?v=toolbar-canvas-1"></script>
+  </body>
+</html>
+
+
+
+
+
+
+
+
