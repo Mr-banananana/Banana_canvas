@@ -28,6 +28,14 @@ const els = {
   commerceAssetLibrary: document.getElementById("commerceAssetLibrary"),
   commerceAssetGrid: document.getElementById("commerceAssetGrid"),
   commerceAssetCount: document.getElementById("commerceAssetCount"),
+  commerceCompositionPreview: document.getElementById("commerceCompositionPreview"),
+  commerceLayerPanel: document.getElementById("commerceLayerPanel"),
+  commerceLayerStatus: document.getElementById("commerceLayerStatus"),
+  commerceCopyEditor: document.getElementById("commerceCopyEditor"),
+  commerceCopyTitle: document.getElementById("commerceCopyTitle"),
+  commerceCopyBenefits: document.getElementById("commerceCopyBenefits"),
+  commerceLayerRestore: document.getElementById("commerceLayerRestore"),
+  commerceExportButton: document.getElementById("commerceExportButton"),
   productVideoWorkspace: document.getElementById("productVideoWorkspace"),
   productVideoUploadInput: document.getElementById("productVideoUploadInput"),
   productVideoPrompt: document.getElementById("productVideoPrompt"),
@@ -110,7 +118,9 @@ const state = {
     promptStatus: "idle",
     error: "",
     promptError: "",
-    results: []
+    results: [],
+    activeResultId: "",
+    copy: { title: "", benefits: [], specs: [] }
   },
   productVideoWorkspace: {
     productRef: null,
@@ -291,6 +301,237 @@ function normalizeCommerceRef(ref) {
   return { url: String(ref.url), name: String(ref.name || "图片"), mime: String(ref.mime) };
 }
 
+const COMMERCE_LAYER_TYPES = new Set(["product", "scene", "model", "copy", "decoration"]);
+
+function finiteNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function commerceLayer(type, options = {}) {
+  const safeType = COMMERCE_LAYER_TYPES.has(type) ? type : "decoration";
+  const width = Math.max(1, finiteNumber(options.width, 320));
+  const height = Math.max(1, finiteNumber(options.height, 320));
+  return {
+    id: String(options.id || uid(`commerce-${safeType}`)),
+    type: safeType,
+    visible: options.visible !== false,
+    locked: options.locked === true,
+    opacity: Math.max(0, Math.min(1, finiteNumber(options.opacity, 1))),
+    x: finiteNumber(options.x, 0),
+    y: finiteNumber(options.y, 0),
+    width,
+    height,
+    rotation: finiteNumber(options.rotation, 0),
+    z: finiteNumber(options.z, 0),
+    src: String(options.src || ""),
+    name: String(options.name || ""),
+    text: String(options.text || ""),
+    fontSize: Math.max(12, finiteNumber(options.fontSize, 46)),
+    fontWeight: String(options.fontWeight || "700"),
+    color: String(options.color || "#f7f7ee"),
+    background: String(options.background || "transparent"),
+    align: ["left", "center", "right"].includes(options.align) ? options.align : "left"
+  };
+}
+
+function commerceCompositionSize(workspace = {}) {
+  const size = sizeForImage(workspace.aspect || "3:4", workspace.resolution || "2k");
+  const [width, height] = String(size).split("x").map(value => Math.max(1, Math.round(Number(value) || 1)));
+  return { width, height };
+}
+
+function createCommerceComposition(workspace = {}) {
+  const { width, height } = commerceCompositionSize(workspace);
+  const product = normalizeCommerceRef(workspace.productRef);
+  const productWidth = Math.round(width * 0.68);
+  const productHeight = Math.round(height * 0.68);
+  return {
+    version: 1,
+    width,
+    height,
+    background: "#1a211c",
+    sourceProduct: product,
+    selectedLayerId: product ? "" : "",
+    layers: product ? [commerceLayer("product", {
+      src: product.url,
+      name: product.name,
+      x: Math.round((width - productWidth) / 2),
+      y: Math.round((height - productHeight) / 2),
+      width: productWidth,
+      height: productHeight,
+      locked: true,
+      z: 20
+    })] : []
+  };
+}
+
+function normalizeCommerceComposition(value, fallback = {}) {
+  const base = createCommerceComposition(fallback);
+  const source = value && typeof value === "object" ? value : {};
+  const width = Math.max(1, Math.round(finiteNumber(source.width, base.width)));
+  const height = Math.max(1, Math.round(finiteNumber(source.height, base.height)));
+  const sourceProduct = normalizeCommerceRef(source.sourceProduct) || normalizeCommerceRef(fallback.productRef);
+  const layers = Array.isArray(source.layers)
+    ? source.layers.filter(layer => layer && COMMERCE_LAYER_TYPES.has(layer.type)).map(layer => commerceLayer(layer.type, {
+      ...layer,
+      x: finiteNumber(layer.x),
+      y: finiteNumber(layer.y),
+      width: Math.min(width, Math.max(1, finiteNumber(layer.width, 320))),
+      height: Math.min(height, Math.max(1, finiteNumber(layer.height, 320)))
+    }))
+    : base.layers;
+  if (sourceProduct && !layers.some(layer => layer.type === "product")) {
+    layers.unshift(commerceLayer("product", { src: sourceProduct.url, name: sourceProduct.name, locked: true, z: 20 }));
+  }
+  return {
+    version: 1,
+    width,
+    height,
+    background: String(source.background || base.background),
+    sourceProduct,
+    selectedLayerId: String(source.selectedLayerId || layers[0]?.id || ""),
+    layers: layers.sort((a, b) => a.z - b.z)
+  };
+}
+
+function commerceCopyLayer(copy = {}, composition = {}) {
+  const title = String(copy.title || "").trim();
+  const benefits = Array.isArray(copy.benefits) ? copy.benefits.map(item => String(item || "").trim()).filter(Boolean).slice(0, 3) : [];
+  if (!title && !benefits.length) return null;
+  const width = Math.max(1, finiteNumber(composition.width, 1024));
+  const height = Math.max(1, finiteNumber(composition.height, 1280));
+  return commerceLayer("copy", {
+    id: "commerce-copy",
+    text: [title, ...benefits.map(item => `• ${item}`)].filter(Boolean).join("\n"),
+    x: Math.round(width * 0.08),
+    y: Math.round(height * 0.08),
+    width: Math.round(width * 0.52),
+    height: Math.round(height * 0.34),
+    fontSize: Math.max(30, Math.round(width / 24)),
+    color: "#ffffff",
+    z: 40
+  });
+}
+
+function commerceLoadImage(src, label = "图片") {
+  return new Promise((resolve, reject) => {
+    if (!src) {
+      reject(new Error(`${label}没有可用图片资源。`));
+      return;
+    }
+    const image = new Image();
+    if (!String(src).startsWith("data:")) image.crossOrigin = "anonymous";
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error(`${label}加载失败，无法导出。`));
+    image.src = src;
+  });
+}
+
+const commerceCutoutCache = new Map();
+
+async function commercePrepareProductImage(src) {
+  if (!String(src).startsWith("data:image/")) return src;
+  if (commerceCutoutCache.has(src)) return commerceCutoutCache.get(src);
+  const image = await commerceLoadImage(src, "产品图");
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth || image.width;
+  canvas.height = image.naturalHeight || image.height;
+  if (!canvas.width || !canvas.height) return src;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(image, 0, 0);
+  const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const { data, width, height } = pixels;
+  const cornerPoints = [[0, 0], [width - 1, 0], [0, height - 1], [width - 1, height - 1]];
+  const corners = cornerPoints.map(([x, y]) => {
+    const offset = (y * width + x) * 4;
+    return [data[offset], data[offset + 1], data[offset + 2], data[offset + 3]];
+  });
+  const brightCorners = corners.filter(([r, g, b, a]) => a > 0 && (r + g + b) / 3 > 210 && Math.max(r, g, b) - Math.min(r, g, b) < 32);
+  if (brightCorners.length < 3) {
+    commerceCutoutCache.set(src, src);
+    return src;
+  }
+  const bg = brightCorners.reduce((sum, color) => color.map((value, index) => sum[index] + value), [0, 0, 0, 0]).map(value => value / brightCorners.length);
+  const visited = new Uint8Array(width * height);
+  const queue = [];
+  const push = (x, y) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const index = y * width + x;
+    if (visited[index]) return;
+    const offset = index * 4;
+    const distance = Math.abs(data[offset] - bg[0]) + Math.abs(data[offset + 1] - bg[1]) + Math.abs(data[offset + 2] - bg[2]);
+    if (data[offset + 3] === 0 || distance <= 72) {
+      visited[index] = 1;
+      queue.push(index);
+    }
+  };
+  for (let x = 0; x < width; x += 1) { push(x, 0); push(x, height - 1); }
+  for (let y = 1; y < height - 1; y += 1) { push(0, y); push(width - 1, y); }
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const index = queue[cursor];
+    data[index * 4 + 3] = 0;
+    const x = index % width;
+    const y = Math.floor(index / width);
+    push(x - 1, y); push(x + 1, y); push(x, y - 1); push(x, y + 1);
+  }
+  ctx.putImageData(pixels, 0, 0);
+  const prepared = canvas.toDataURL("image/png");
+  commerceCutoutCache.set(src, prepared);
+  return prepared;
+}
+
+function commerceDrawText(ctx, layer) {
+  const lines = String(layer.text || "").split(/\r?\n/).filter(Boolean);
+  if (!lines.length) return;
+  ctx.save();
+  ctx.globalAlpha = layer.opacity;
+  ctx.translate(layer.x + layer.width / 2, layer.y + layer.height / 2);
+  ctx.rotate(layer.rotation * Math.PI / 180);
+  ctx.textAlign = layer.align;
+  ctx.textBaseline = "top";
+  ctx.font = `${layer.fontWeight} ${layer.fontSize}px "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif`;
+  ctx.fillStyle = layer.color;
+  const startX = layer.align === "left" ? -layer.width / 2 : layer.align === "right" ? layer.width / 2 : 0;
+  let y = -layer.height / 2;
+  lines.slice(0, 6).forEach((line, index) => {
+    const text = line.slice(0, index === 0 ? 28 : 32);
+    ctx.fillText(text, startX, y, layer.width);
+    y += layer.fontSize * (index === 0 ? 1.28 : 1.12);
+  });
+  ctx.restore();
+}
+
+async function renderCommerceComposition(composition, target) {
+  if (!target || typeof target.getContext !== "function") throw new Error("合成预览画布不可用。");
+  const safe = normalizeCommerceComposition(composition);
+  const ctx = target.getContext("2d");
+  target.width = safe.width;
+  target.height = safe.height;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.clearRect(0, 0, safe.width, safe.height);
+  ctx.fillStyle = safe.background;
+  ctx.fillRect(0, 0, safe.width, safe.height);
+  const layers = safe.layers.filter(layer => layer.visible).sort((a, b) => a.z - b.z);
+  for (const layer of layers) {
+    if (layer.type === "copy") {
+      commerceDrawText(ctx, layer);
+      continue;
+    }
+    if (!layer.src) continue;
+    const imageSrc = layer.type === "product" ? await commercePrepareProductImage(layer.src) : layer.src;
+    const image = await commerceLoadImage(imageSrc, layer.name || layer.type);
+    ctx.save();
+    ctx.globalAlpha = layer.opacity;
+    ctx.translate(layer.x + layer.width / 2, layer.y + layer.height / 2);
+    ctx.rotate(layer.rotation * Math.PI / 180);
+    ctx.drawImage(image, -layer.width / 2, -layer.height / 2, layer.width, layer.height);
+    ctx.restore();
+  }
+  return target;
+}
+
 function normalizeCommerceWorkspace(workspace = {}) {
   const validStatus = ["idle", "running", "done", "error"];
   return {
@@ -311,14 +552,28 @@ function normalizeCommerceWorkspace(workspace = {}) {
     promptStatus: validStatus.includes(workspace.promptStatus) ? workspace.promptStatus : "idle",
     error: String(workspace.error || ""),
     promptError: String(workspace.promptError || ""),
+    activeResultId: String(workspace.activeResultId || ""),
+    copy: normalizeCommerceCopy(workspace.copy),
     results: Array.isArray(workspace.results) ? workspace.results.filter(result => result?.url).map(result => ({
       id: String(result.id || uid("commerce-result")),
       url: String(result.url),
+      previewUrl: String(result.previewUrl || result.url),
       mime: String(result.mime || "image/png"),
       prompt: String(result.prompt || ""),
       createdAt: Number(result.createdAt || Date.now()),
-      status: "done"
+      status: "done",
+      copy: normalizeCommerceCopy(result.copy),
+      composition: normalizeCommerceComposition(result.composition, workspace)
     })) : []
+  };
+}
+
+function normalizeCommerceCopy(copy = {}) {
+  const source = copy && typeof copy === "object" ? copy : {};
+  return {
+    title: String(source.title || "").trim().slice(0, 28),
+    benefits: Array.isArray(source.benefits) ? source.benefits.map(item => String(item || "").trim()).filter(Boolean).slice(0, 3) : [],
+    specs: Array.isArray(source.specs) ? source.specs.map(item => String(item || "").trim()).filter(Boolean).slice(0, 5) : []
   };
 }
 
@@ -456,8 +711,14 @@ const COMMERCE_IMAGE_GUARDRAILS = [
   "不要生成任何可读文字、中文、英文、数字、字母、标签、标题、logo、水印或界面元素；所有卖点用产品细节、使用动作和构图来表达，并为后期中文排版保留干净留白。"
 ].join("\n");
 
-function commerceImagePrompt(prompt) {
-  return [String(prompt || "").trim(), COMMERCE_IMAGE_GUARDRAILS].filter(Boolean).join("\n");
+const COMMERCE_SCENE_GUARDRAILS = [
+  "scene-only：只生成有色彩、有层次、有商业摄影光影的背景与环境，不要生成商品、产品包装、人物手中的产品或任何重复主体。",
+  "允许使用品牌色、渐变、真实道具、材质对比、生活方式场景和方向性光线；不要默认纯白背景，除非用户明确要求白底。",
+  "为后续叠加真实产品和中文文案预留自然的构图空间；不要生成任何可读文字、中文、英文、数字、字母、logo、水印或界面元素。"
+].join("\n");
+
+function commerceImagePrompt(prompt, sceneOnly = false) {
+  return [String(prompt || "").trim(), sceneOnly ? COMMERCE_SCENE_GUARDRAILS : COMMERCE_IMAGE_GUARDRAILS].filter(Boolean).join("\n");
 }
 
 function agnesImageRequest(card, apiKey, prompt, imageRefs = [], imageRoles = []) {
@@ -465,12 +726,13 @@ function agnesImageRequest(card, apiKey, prompt, imageRefs = [], imageRoles = []
   const request = {
     apiKey,
     model,
-    prompt: card.type === "commerce" ? commerceImagePrompt(prompt) : prompt,
+    prompt: card.type === "commerce" ? commerceImagePrompt(prompt, card.sceneOnly === true) : prompt,
     quality: card.imageQuality || "medium",
     responseFormat: settings.imageResponseFormat,
     imageRefs,
     imageRoles,
-    workflow: card.type || undefined
+    workflow: card.type || undefined,
+    sceneOnly: card.sceneOnly === true ? true : undefined
   };
   if (model === "agnes-image-2.1-flash") {
     request.size = agnesImageSize(card.imageResolution || "1k");
@@ -786,6 +1048,15 @@ function commerceWorkspaceReferences() {
   };
 }
 
+function commerceWorkspaceSceneReferences() {
+  const roles = ["model", "scene"];
+  const refs = roles.map(role => commerceWorkspaceRefFor(role)).filter(Boolean);
+  return {
+    imageRefs: refs.map(ref => ref.url),
+    imageRoles: roles.filter(role => commerceWorkspaceRefFor(role))
+  };
+}
+
 function commerceWorkspaceSlotMarkup(role, label, required) {
   const ref = commerceWorkspaceRefFor(role);
   const media = ref
@@ -825,12 +1096,19 @@ function renderCommerceWorkspace() {
     button.classList.toggle("error", role === "product" && workspace.status === "error" && !commerceWorkspaceRefFor(role));
     button.innerHTML = commerceWorkspaceSlotMarkup(role, role === "product" ? "商品图" : role === "model" ? "模特图" : "场景图", role === "product");
   });
+  const activeResult = activeCommerceWorkspaceResult();
+  if (activeResult && workspace.activeResultId !== activeResult.id) workspace.activeResultId = activeResult.id;
+  renderCommerceLayerPanel(activeResult);
+  syncCommerceCopyEditor(activeResult);
+  if (els.commerceLayerRestore) els.commerceLayerRestore.disabled = !activeResult?.composition?.sourceProduct;
+  if (els.commerceExportButton) els.commerceExportButton.disabled = !activeResult?.composition;
+  renderActiveCommerceComposition(activeResult);
   els.commerceAssetGrid.innerHTML = workspace.results.length
     ? workspace.results.map(result => `
-      <article class="commerce-asset-card" data-commerce-result-id="${escapeAttr(result.id)}">
-        <div class="commerce-asset-media"><img src="${escapeAttr(result.url)}" alt="电商宣传图" draggable="false">
+      <article class="commerce-asset-card ${result.id === workspace.activeResultId ? "active" : ""}" data-commerce-result-id="${escapeAttr(result.id)}">
+        <div class="commerce-asset-media"><img src="${escapeAttr(result.previewUrl || result.url)}" alt="电商宣传图" draggable="false">
           <div class="commerce-asset-overlay"><button type="button" data-commerce-preview-action="add" data-commerce-result-id="${escapeAttr(result.id)}">加入画布</button><button type="button" data-commerce-preview-action="download" data-commerce-result-id="${escapeAttr(result.id)}">下载本地</button></div>
-          <div class="commerce-asset-large"><img src="${escapeAttr(result.url)}" alt="电商宣传图大图" draggable="false"></div>
+          <div class="commerce-asset-large"><img src="${escapeAttr(result.previewUrl || result.url)}" alt="电商宣传图大图" draggable="false"></div>
         </div>
         <div class="commerce-asset-meta"><strong>电商宣传图</strong><span>${new Date(result.createdAt).toLocaleTimeString()}</span></div>
       </article>`).join("")
@@ -1575,12 +1853,56 @@ function setupToolbar() {
   els.commerceWorkspacePromptButton.addEventListener("click", generateCommerceWorkspacePrompt);
   els.commerceWorkspaceGenerate.addEventListener("click", generateCommerceWorkspacePromo);
   els.commerceAssetGrid.addEventListener("click", event => {
+    const card = event.target.closest("[data-commerce-result-id]");
+    if (card) selectCommerceResult(card.dataset.commerceResultId);
     const action = event.target.closest("[data-commerce-preview-action]");
     if (!action) return;
     const id = action.dataset.commerceResultId;
     if (action.dataset.commercePreviewAction === "add") addCommerceWorkspaceResultToCanvas(id);
     if (action.dataset.commercePreviewAction === "download") downloadCommerceWorkspaceResult(id);
   });
+  els.commerceLayerPanel.addEventListener("click", event => {
+    const row = event.target.closest("[data-commerce-layer-id]");
+    if (!row) return;
+    const result = activeCommerceWorkspaceResult();
+    const id = row.dataset.commerceLayerId;
+    const layer = result?.composition?.layers.find(item => item.id === id);
+    if (!layer) return;
+    const action = event.target.closest("[data-commerce-layer-action]");
+    if (action?.dataset.commerceLayerAction === "visibility") layer.visible = !layer.visible;
+    else if (action?.dataset.commerceLayerAction === "lock") layer.locked = !layer.locked;
+    else if (action?.dataset.commerceLayerAction === "scale-down") return scaleCommerceLayer(id, 0.9);
+    else if (action?.dataset.commerceLayerAction === "scale-up") return scaleCommerceLayer(id, 1.1);
+    else result.composition.selectedLayerId = id;
+    renderCommerceWorkspace();
+    save();
+  });
+  [els.commerceCopyTitle, els.commerceCopyBenefits].forEach(input => {
+    input.addEventListener("input", () => {
+      const result = activeCommerceWorkspaceResult();
+      if (!result) return;
+      result.copy = result.copy || { title: "", benefits: [], specs: [] };
+      result.copy.title = els.commerceCopyTitle.value.trim().slice(0, 28);
+      result.copy.benefits = els.commerceCopyBenefits.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean).slice(0, 3);
+      syncCommerceCopyLayer(result);
+      renderCommerceLayerPanel(result);
+      renderActiveCommerceComposition(result);
+      scheduleSave();
+    });
+  });
+  els.commerceLayerRestore.addEventListener("click", () => {
+    const result = activeCommerceWorkspaceResult();
+    const product = result?.composition?.layers.find(layer => layer.type === "product");
+    if (!result?.composition?.sourceProduct || !product) return;
+    product.src = result.composition.sourceProduct.url;
+    product.name = result.composition.sourceProduct.name;
+    product.locked = true;
+    result.composition.selectedLayerId = product.id;
+    renderCommerceWorkspace();
+    save();
+  });
+  els.commerceExportButton.addEventListener("click", () => exportActiveCommerceComposition());
+  setupCommerceComposerInteractions();
   document.querySelectorAll("[data-product-video-slot]").forEach(button => {
     button.addEventListener("click", event => {
       if (event.target.closest("[data-product-video-remove]")) {
@@ -1995,20 +2317,20 @@ function commerceWorkspacePrompt() {
   const custom = String(state.commerceWorkspace.prompt || "").trim();
   if (state.commerceWorkspace.promptMode === "auto") return custom;
   return [
-    "Create a polished e-commerce product hero image for online retail.",
-    "Use the first reference image as the exact product identity and preserve its shape, proportions, material, logo placement, color, structure, and visible details without redesigning it.",
-    "Use model and scene references only when provided, keeping the product as the visual focus.",
-    "Use a single clear commercial composition, premium realistic lighting, natural texture, clean background, and enough blank space for Chinese e-commerce copy to be typeset later.",
-    "Express selling points through product details, usage action, lighting, and composition; do not ask the image model to draw readable copy.",
+    "Create a polished single-screen e-commerce background scene for online retail.",
+    "Generate a scene-only visual: rich brand color, tasteful gradient or real lifestyle environment, premium commercial lighting, material contrast, and clear negative space for the real product and Chinese copy to be composited later.",
+    "Do not generate any product, packaging, person holding a product, readable text, Chinese, English, numbers, logo, watermark, collage, or split-screen layout.",
+    "Express selling points through the scene's lighting, props, color story, and intended use context; do not ask the image model to draw copy.",
     custom
   ].filter(Boolean).join("\n");
 }
 
 function commerceWorkspaceImageRequest(apiKey, prompt) {
   const workspace = state.commerceWorkspace;
-  const refs = commerceWorkspaceReferences();
+  const refs = commerceWorkspaceSceneReferences();
   const requestCard = {
     type: "commerce",
+    sceneOnly: true,
     model: settings.imageModel,
     imageQuality: workspace.quality,
     imageResolution: workspace.resolution,
@@ -2022,13 +2344,265 @@ function commerceWorkspaceResult(id) {
   return state.commerceWorkspace.results.find(result => result.id === id) || null;
 }
 
-function addCommerceWorkspaceResultToCanvas(id) {
+function activeCommerceWorkspaceResult() {
+  const workspace = state.commerceWorkspace;
+  return commerceWorkspaceResult(workspace.activeResultId) || workspace.results[0] || null;
+}
+
+function createCommerceWorkspaceResult(url, mime, prompt, copy = {}) {
+  const workspace = state.commerceWorkspace;
+  const composition = createCommerceComposition(workspace);
+  const sceneWidth = composition.width;
+  const sceneHeight = composition.height;
+  composition.layers.unshift(commerceLayer("scene", {
+    src: url,
+    name: "AI 场景",
+    x: 0,
+    y: 0,
+    width: sceneWidth,
+    height: sceneHeight,
+    z: 0
+  }));
+  const normalizedCopy = normalizeCommerceCopy(copy);
+  const copyLayer = commerceCopyLayer(normalizedCopy, composition);
+  if (copyLayer) composition.layers.push(copyLayer);
+  composition.layers.sort((a, b) => a.z - b.z);
+  return {
+    id: uid("commerce-result"),
+    url,
+    previewUrl: url,
+    mime: mime || "image/png",
+    prompt: String(prompt || ""),
+    copy: normalizedCopy,
+    composition,
+    createdAt: Date.now(),
+    status: "done"
+  };
+}
+
+function commerceLayerLabel(layer) {
+  return ({ product: "产品", scene: "场景", model: "模特", copy: "中文文案", decoration: "装饰" }[layer.type] || "图层");
+}
+
+function renderCommerceLayerPanel(result) {
+  if (!els.commerceLayerPanel) return;
+  const composition = result?.composition;
+  const layers = composition?.layers || [];
+  if (!layers.length) {
+    els.commerceLayerPanel.innerHTML = `<div class="commerce-layer-empty">生成结果后，这里会显示可编辑图层。</div>`;
+    return;
+  }
+  els.commerceLayerPanel.innerHTML = [...layers].sort((a, b) => b.z - a.z).map(layer => `
+    <div class="commerce-layer-row ${composition.selectedLayerId === layer.id ? "active" : ""}" data-commerce-layer-id="${escapeAttr(layer.id)}">
+      <strong>${escapeHtml(commerceLayerLabel(layer))}</strong><small>${layer.locked ? "已锁定" : "可编辑"}</small>
+      <button type="button" data-commerce-layer-action="visibility" data-commerce-layer-id="${escapeAttr(layer.id)}" title="显示/隐藏">${layer.visible ? "显" : "隐"}</button>
+      <button type="button" data-commerce-layer-action="lock" data-commerce-layer-id="${escapeAttr(layer.id)}" title="锁定/解锁">${layer.locked ? "锁" : "开"}</button>
+      <button type="button" data-commerce-layer-action="scale-down" data-commerce-layer-id="${escapeAttr(layer.id)}" title="缩小">−</button>
+      <button type="button" data-commerce-layer-action="scale-up" data-commerce-layer-id="${escapeAttr(layer.id)}" title="放大">＋</button>
+    </div>`).join("");
+}
+
+function syncCommerceCopyEditor(result) {
+  if (!els.commerceCopyEditor) return;
+  const copy = result?.copy || { title: "", benefits: [] };
+  els.commerceCopyTitle.value = copy.title || "";
+  els.commerceCopyBenefits.value = (copy.benefits || []).join("\n");
+  els.commerceCopyEditor.classList.toggle("hidden", !result);
+}
+
+function syncCommerceCopyLayer(result) {
+  if (!result?.composition) return;
+  const layers = result.composition.layers;
+  const copyLayer = layers.find(layer => layer.type === "copy");
+  const next = commerceCopyLayer(result.copy || {}, result.composition);
+  if (next && copyLayer) Object.assign(copyLayer, next, { id: copyLayer.id, locked: false, z: copyLayer.z });
+  else if (next) layers.push(next);
+  else if (copyLayer) result.composition.layers = layers.filter(layer => layer !== copyLayer);
+  result.composition.layers.sort((a, b) => a.z - b.z);
+}
+
+function selectCommerceResult(id) {
+  if (!commerceWorkspaceResult(id)) return;
+  state.commerceWorkspace.activeResultId = id;
+  renderCommerceWorkspace();
+  save();
+}
+
+function updateCommerceLayer(id, changes) {
+  const result = activeCommerceWorkspaceResult();
+  const layer = result?.composition?.layers.find(item => item.id === id);
+  if (!layer || layer.locked) return;
+  Object.assign(layer, changes);
+  result.composition.selectedLayerId = id;
+  renderCommerceWorkspace();
+  save();
+}
+
+function commerceCanvasPoint(event, composition) {
+  const rect = els.commerceCompositionPreview?.getBoundingClientRect();
+  if (!rect || !rect.width || !rect.height) return null;
+  return {
+    x: (event.clientX - rect.left) * composition.width / rect.width,
+    y: (event.clientY - rect.top) * composition.height / rect.height
+  };
+}
+
+function commerceLayerAtPoint(composition, point) {
+  return [...(composition?.layers || [])]
+    .filter(layer => layer.visible && point.x >= layer.x && point.x <= layer.x + layer.width && point.y >= layer.y && point.y <= layer.y + layer.height)
+    .sort((a, b) => b.z - a.z)[0] || null;
+}
+
+function scaleCommerceLayer(id, factor) {
+  const result = activeCommerceWorkspaceResult();
+  const layer = result?.composition?.layers.find(item => item.id === id);
+  if (!layer || layer.locked) return;
+  const composition = result.composition;
+  const nextWidth = Math.max(48, Math.min(composition.width, layer.width * factor));
+  const nextHeight = Math.max(48, Math.min(composition.height, layer.height * factor));
+  const centerX = layer.x + layer.width / 2;
+  const centerY = layer.y + layer.height / 2;
+  layer.width = Math.round(nextWidth);
+  layer.height = Math.round(nextHeight);
+  layer.x = Math.round(Math.max(0, Math.min(composition.width - layer.width, centerX - layer.width / 2)));
+  layer.y = Math.round(Math.max(0, Math.min(composition.height - layer.height, centerY - layer.height / 2)));
+  composition.selectedLayerId = id;
+  renderCommerceWorkspace();
+  save();
+}
+
+function setupCommerceComposerInteractions() {
+  const canvas = els.commerceCompositionPreview;
+  if (!canvas || canvas.dataset.interactionsReady === "true") return;
+  canvas.dataset.interactionsReady = "true";
+  canvas.addEventListener("pointerdown", event => {
+    if (event.button !== 0) return;
+    const result = activeCommerceWorkspaceResult();
+    const composition = result?.composition;
+    const point = composition ? commerceCanvasPoint(event, composition) : null;
+    const hit = point ? commerceLayerAtPoint(composition, point) : null;
+    if (!composition || !hit) return;
+    composition.selectedLayerId = hit.id;
+    renderCommerceLayerPanel(result);
+    if (hit.locked) {
+      event.preventDefault();
+      return;
+    }
+    state.commerceLayerDrag = {
+      id: hit.id,
+      pointerId: event.pointerId,
+      start: point,
+      origin: { x: hit.x, y: hit.y }
+    };
+    canvas.setPointerCapture(event.pointerId);
+    canvas.classList.add("dragging");
+    event.preventDefault();
+  });
+  canvas.addEventListener("pointermove", event => {
+    const drag = state.commerceLayerDrag;
+    const result = activeCommerceWorkspaceResult();
+    const composition = result?.composition;
+    if (!drag || !composition || drag.pointerId !== event.pointerId) return;
+    const point = commerceCanvasPoint(event, composition);
+    const layer = composition.layers.find(item => item.id === drag.id);
+    if (!point || !layer || layer.locked) return;
+    const scaleX = (point.x - drag.start.x);
+    const scaleY = (point.y - drag.start.y);
+    layer.x = Math.round(Math.max(0, Math.min(composition.width - layer.width, drag.origin.x + scaleX)));
+    layer.y = Math.round(Math.max(0, Math.min(composition.height - layer.height, drag.origin.y + scaleY)));
+    renderActiveCommerceComposition(result);
+    scheduleSave();
+    event.preventDefault();
+  });
+  const finishDrag = event => {
+    if (!state.commerceLayerDrag || state.commerceLayerDrag.pointerId !== event.pointerId) return;
+    state.commerceLayerDrag = null;
+    canvas.classList.remove("dragging");
+    try { canvas.releasePointerCapture(event.pointerId); } catch { /* pointer may already be released */ }
+    save();
+  };
+  canvas.addEventListener("pointerup", finishDrag);
+  canvas.addEventListener("pointercancel", finishDrag);
+  canvas.addEventListener("dragstart", event => event.preventDefault());
+}
+
+async function renderActiveCommerceComposition(result) {
+  if (!els.commerceCompositionPreview) return;
+  if (!result?.composition) {
+    const ctx = els.commerceCompositionPreview.getContext("2d");
+    els.commerceCompositionPreview.width = 1;
+    els.commerceCompositionPreview.height = 1;
+    ctx.clearRect(0, 0, 1, 1);
+    if (els.commerceLayerStatus) els.commerceLayerStatus.textContent = "选择一个生成结果开始编辑";
+    return;
+  }
+  const renderToken = uid("commerce-preview");
+  state.commercePreviewToken = renderToken;
+  if (els.commerceLayerStatus) els.commerceLayerStatus.textContent = "正在合成预览…";
+  try {
+    await renderCommerceComposition(result.composition, els.commerceCompositionPreview);
+    if (state.commercePreviewToken !== renderToken) return;
+    if (els.commerceLayerStatus) els.commerceLayerStatus.textContent = `${result.composition.layers.length} 个图层，可单独编辑`;
+  } catch (error) {
+    if (els.commerceLayerStatus) els.commerceLayerStatus.textContent = error.message || "图层预览失败";
+  }
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("无法读取导出的 PNG。"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function exportCommerceComposition(result) {
+  if (!result?.composition) throw new Error("当前结果没有可导出的图层合成。");
+  const canvas = document.createElement("canvas");
+  await renderCommerceComposition(result.composition, canvas);
+  const blob = await new Promise((resolve, reject) => {
+    canvas.toBlob(value => value ? resolve(value) : reject(new Error("浏览器无法导出 PNG。")), "image/png");
+  });
+  if (!blob || !blob.size) throw new Error("导出的 PNG 为空，请检查图层资源。");
+  return blob;
+}
+
+async function exportActiveCommerceComposition() {
+  const result = activeCommerceWorkspaceResult();
+  if (!result) return;
+  const button = els.commerceExportButton;
+  if (button) button.disabled = true;
+  try {
+    const blob = await exportCommerceComposition(result);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `banana-commerce-${Date.now()}.png`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    if (els.commerceLayerStatus) els.commerceLayerStatus.textContent = "PNG 已导出，中文图层已合成。";
+  } catch (error) {
+    if (els.commerceLayerStatus) els.commerceLayerStatus.textContent = error.message || "PNG 导出失败。";
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function addCommerceWorkspaceResultToCanvas(id) {
   const result = commerceWorkspaceResult(id);
   if (!result) return;
+  let url = result.url;
+  try {
+    const blob = await exportCommerceComposition(result);
+    url = await blobToDataUrl(blob);
+  } catch {
+    // The original AI asset remains available when a remote layer cannot be composited.
+  }
   setWorkspaceMode("canvas");
   const card = createCard("upload", {
     title: "电商宣传图",
-    resultUrl: result.url,
+    resultUrl: url,
     mime: result.mime,
     x: viewportCenter().x - 155,
     y: viewportCenter().y - 120
@@ -2045,12 +2619,11 @@ async function downloadCommerceWorkspaceResult(id) {
   const link = document.createElement("a");
   const filename = `banana-commerce-${Date.now()}.png`;
   try {
-    const response = await fetch(result.url);
-    if (!response.ok) throw new Error("download failed");
-    link.href = URL.createObjectURL(await response.blob());
+    const url = URL.createObjectURL(await exportCommerceComposition(result));
+    link.href = url;
     link.download = filename;
     link.click();
-    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch {
     link.href = result.url;
     link.download = filename;
@@ -2112,10 +2685,11 @@ async function generateCommerceWorkspacePrompt() {
       imageRefs: refs.imageRefs,
       imageRoles: refs.imageRoles
     });
-    const generated = cleanGeneratedPrompt(promptResultText(data));
-    if (!generated) throw new Error(promptResponseError(data));
-    workspace.prompt = generated;
-    workspace.lastGeneratedPrompt = generated;
+    const generated = promptResultPayload(data);
+    if (!generated.visualPrompt) throw new Error(promptResponseError(data));
+    workspace.prompt = generated.visualPrompt;
+    workspace.copy = generated.copy;
+    workspace.lastGeneratedPrompt = generated.visualPrompt;
     workspace.promptStatus = "done";
   } catch (error) {
     workspace.promptStatus = "error";
@@ -2169,9 +2743,10 @@ async function generateCommerceWorkspacePromo() {
       const imageResponse = await requestCommerceImage(imageRequest);
       result = imageResultUrl(imageResponse.data);
       if (!result) throw new Error("图片 API 未返回可用的图片 URL。");
-      workspace.results.unshift({ id: uid("commerce-result"), url: result.url, mime: result.mime, prompt: imageResponse.prompt, createdAt: Date.now(), status: "done" });
+      workspace.results.unshift(createCommerceWorkspaceResult(result.url, result.mime, prompt, workspace.copy));
     }
-    if (settings.provider === "custom") workspace.results.unshift({ id: uid("commerce-result"), url: result.url, mime: result.mime, prompt, createdAt: Date.now(), status: "done" });
+    if (settings.provider === "custom") workspace.results.unshift(createCommerceWorkspaceResult(result.url, result.mime, prompt, workspace.copy));
+    workspace.activeResultId = workspace.results[0]?.id || "";
     workspace.status = "done";
   } catch (error) {
     workspace.status = "error";
@@ -2198,13 +2773,11 @@ function commercePrompt(card) {
 
 function commerceSafePrompt() {
   return [
-    "Create one safe, single-frame e-commerce product poster for online retail.",
-    "Use the uploaded product reference as the exact product and preserve only its visible shape, material, color, logo, and details.",
-    "Show one product as the clear visual subject in one neutral studio or everyday commercial setting with realistic lighting and clean composition.",
-    "Express the product's visible factual advantages as one clear main selling point and no more than three short benefit labels in the same poster; do not invent specifications, medical effects, certifications, or promises.",
-    "Leave clean space for short e-commerce copy; do not render long paragraphs or dense small text.",
+    "Create one safe, single-frame, scene-only e-commerce background for online retail.",
+    "Use rich but controlled brand color, tasteful gradient, real lifestyle context, material contrast, directional commercial lighting, and an intentional area for a product cutout and Chinese copy to be composited later.",
+    "Do not generate products, packaging, people holding products, readable text, Chinese, English, numbers, labels, logos, watermarks, or dense small text.",
     "No people, minors, intimacy, nudity, violence, weapons, drugs, illegal activity, dangerous actions, medical claims, political content, or other sensitive themes.",
-    "No collage, split screen, multi-panel detail page, multiple scenes, storyboard, shot list, or repeated product."
+    "No collage, split screen, multi-panel detail page, multiple scenes, storyboard, shot list, or repeated subject."
   ].join(" ");
 }
 
@@ -2301,6 +2874,37 @@ function promptResultText(data) {
     if (text) return text;
   }
   return "";
+}
+
+function promptJsonCandidate(value, depth = 0) {
+  if (depth > 5 || value == null) return null;
+  if (typeof value === "string") {
+    const cleaned = value.trim().replace(/^```(?:json|text)?\s*/i, "").replace(/\s*```$/i, "");
+    try { return promptJsonCandidate(JSON.parse(cleaned), depth + 1); } catch { return null; }
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const parsed = promptJsonCandidate(item, depth + 1);
+      if (parsed) return parsed;
+    }
+    return null;
+  }
+  if (typeof value !== "object") return null;
+  if (value.visualPrompt || value.copy) return value;
+  for (const key of ["content", "output", "result", "data", "response", "message", "choices", "body"]) {
+    const parsed = promptJsonCandidate(value[key], depth + 1);
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+function promptResultPayload(data) {
+  const parsed = promptJsonCandidate(data);
+  if (parsed) {
+    const visualPrompt = cleanGeneratedPrompt(parsed.visualPrompt || parsed.prompt || "");
+    return { visualPrompt, copy: normalizeCommerceCopy(parsed.copy) };
+  }
+  return { visualPrompt: cleanGeneratedPrompt(promptResultText(data)), copy: { title: "", benefits: [], specs: [] } };
 }
 
 function promptResponseError(data) {

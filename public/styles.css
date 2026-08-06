@@ -794,6 +794,60 @@ button { cursor: pointer; }
 .commerce-results-head { align-items: end; }
 .commerce-results-head h2 { margin-bottom: 0; }
 
+.commerce-composer-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(220px, .92fr);
+  gap: 14px;
+  margin-bottom: 20px;
+  padding: 12px;
+  border: 1px solid rgba(231, 255, 37, .16);
+  border-radius: 14px;
+  background: rgba(17, 22, 18, .78);
+}
+
+.commerce-composer-preview {
+  min-width: 0;
+  min-height: 260px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 10px;
+  background: #101511;
+}
+
+#commerceCompositionPreview {
+  width: 100%;
+  height: auto;
+  max-height: 520px;
+  display: block;
+  object-fit: contain;
+}
+
+.commerce-composer-tools { min-width: 0; display: grid; align-content: start; gap: 10px; }
+.commerce-composer-toolbar { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.commerce-composer-toolbar strong { color: #f3f6df; font-size: 14px; }
+.commerce-composer-toolbar span { color: #899486; font-size: 11px; text-align: right; }
+.commerce-layer-panel { display: grid; gap: 7px; max-height: 188px; overflow: auto; }
+.commerce-layer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto repeat(4, 25px); align-items: center; gap: 6px; padding: 8px 9px; border: 1px solid rgba(255,255,255,.08); border-radius: 9px; background: rgba(31, 37, 32, .88); color: #dfe5d7; cursor: pointer; }
+.commerce-layer-row.active { border-color: rgba(231,255,37,.68); background: rgba(49,57,35,.9); }
+.commerce-layer-row strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.commerce-layer-row small { color: #889486; font-size: 10px; }
+.commerce-layer-row button { min-width: 25px; min-height: 25px; border: 1px solid rgba(255,255,255,.12); border-radius: 7px; background: rgba(7,10,8,.45); color: #e9efd7; font-size: 11px; }
+.commerce-layer-row button:hover { border-color: rgba(231,255,37,.7); color: var(--banana); }
+.commerce-composer-preview canvas { cursor: grab; touch-action: none; }
+.commerce-composer-preview canvas.dragging { cursor: grabbing; }
+.commerce-copy-editor { display: grid; gap: 8px; padding-top: 4px; }
+.commerce-copy-editor label { display: grid; gap: 5px; }
+.commerce-copy-editor label > span { color: #899486; font-size: 11px; }
+.commerce-copy-editor input,
+.commerce-copy-editor textarea { width: 100%; box-sizing: border-box; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; background: #1b211c; color: #f5f7df; padding: 8px 9px; font: inherit; font-size: 12px; resize: vertical; }
+.commerce-copy-editor input:focus,
+.commerce-copy-editor textarea:focus { border-color: var(--banana); outline: none; box-shadow: 0 0 0 3px rgba(231,255,37,.1); }
+.commerce-composer-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.commerce-composer-actions button { min-height: 34px; border: 1px solid rgba(255,255,255,.14); border-radius: 8px; background: rgba(32,38,32,.95); color: #dfe5d7; font-size: 11px; font-weight: 800; }
+.commerce-composer-actions button.primary { border-color: rgba(231,255,37,.7); background: var(--banana); color: #111607; }
+.commerce-layer-empty { padding: 16px 10px; border: 1px dashed rgba(255,255,255,.11); border-radius: 9px; color: #899486; font-size: 11px; line-height: 1.5; text-align: center; }
+
 .commerce-asset-library {
   min-height: 0;
   height: calc(100% - 72px);
@@ -820,6 +874,7 @@ button { cursor: pointer; }
 }
 
 .commerce-asset-card:hover { z-index: 4; border-color: rgba(231, 255, 37, 0.52); transform: translateY(-2px); box-shadow: 0 20px 42px rgba(0, 0, 0, 0.34); }
+.commerce-asset-card.active { border-color: rgba(0, 209, 167, .78); box-shadow: 0 0 0 2px rgba(0, 209, 167, .12), 0 20px 42px rgba(0, 0, 0, .28); }
 
 .commerce-asset-media {
   position: relative;
@@ -857,6 +912,7 @@ button { cursor: pointer; }
   .commerce-workspace-form { padding: 24px 18px 30px; }
   .commerce-workspace-results { padding: 24px 18px 30px; }
   .commerce-asset-grid { grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 10px; }
+  .commerce-composer-panel { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 720px) {
