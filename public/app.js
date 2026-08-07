@@ -363,7 +363,7 @@ function renderCanvasLibrary() {
     const updated = canvas.updatedAt ? new Date(canvas.updatedAt).toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "未保存";
     return `<button type="button" class="canvas-library-item${activeClass}" data-canvas-id="${escapeAttr(canvas.id)}"><strong>${escapeHtml(canvas.name)}</strong>${marker}<small>${count} 个节点 · ${escapeHtml(updated)}</small></button>`;
   }).join("");
-  els.deleteCanvas.disabled = canvasLibrary.canvases.length <= 1;
+  els.deleteCanvas.disabled = false;
 }
 
 function closeCanvasLibrary() {
@@ -414,14 +414,20 @@ function renameActiveCanvas() {
 }
 
 function deleteActiveCanvas() {
-  if (canvasLibrary.canvases.length <= 1) return;
   const active = activeCanvasRecord();
   if (!active || !window.confirm(`删除“${active.name}”？此操作不可撤销。`)) return;
   const index = canvasLibrary.canvases.findIndex(canvas => canvas.id === active.id);
   canvasLibrary.canvases.splice(index, 1);
-  const next = canvasLibrary.canvases[Math.max(0, index - 1)];
-  canvasLibrary.activeCanvasId = next.id;
-  applyCanvasRecord(next);
+  if (!canvasLibrary.canvases.length) {
+    const blank = createCanvasRecord("未命名画布", { id: uid("canvas") });
+    canvasLibrary.canvases.push(blank);
+    canvasLibrary.activeCanvasId = blank.id;
+    applyCanvasRecord(blank);
+  } else {
+    const next = canvasLibrary.canvases[Math.max(0, index - 1)];
+    canvasLibrary.activeCanvasId = next.id;
+    applyCanvasRecord(next);
+  }
   closeCanvasLibrary();
   render();
   save();

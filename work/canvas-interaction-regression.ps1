@@ -180,6 +180,13 @@ $checks = @(
       $app -match 'applyCanvasRecord\(activeCanvasRecord\(\)\)'
   },
   @{
+    Name = 'deleting the last canvas creates a new empty canvas'
+    Pass = $app -match 'function deleteActiveCanvas\(\)' -and
+      $app -match 'if \(!canvasLibrary\.canvases\.length\)' -and
+      $app -match 'createCanvasRecord\("未命名画布"' -and
+      $app -match 'canvasLibrary\.canvases\.push\(blank\)'
+  },
+  @{
     Name = 'canvas supports grouping and dependency-aware auto layout'
     Pass = $html -match 'id="groupSelection"' -and
       $html -match 'id="autoLayout"' -and
