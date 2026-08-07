@@ -2108,6 +2108,7 @@ function setupCanvasEvents() {
       event.preventDefault();
       hideContextMenu();
       hideConnectionCreateMenu();
+      els.viewport.classList.add("is-panning");
       state.drag = null;
       state.connecting = null;
       state.selectionBox = null;
@@ -2254,9 +2255,21 @@ function setupCanvasEvents() {
       return;
     }
     if (state.drag || state.pan) save();
+    els.viewport.classList.remove("is-panning");
     stopDragAutoPan();
     state.drag = null;
     state.pan = null;
+  });
+
+  window.addEventListener("pointercancel", () => {
+    if (state.drag || state.pan) save();
+    els.viewport.classList.remove("is-panning");
+    stopDragAutoPan();
+    state.drag = null;
+    state.pan = null;
+    state.selectionBox = null;
+    state.connecting = null;
+    render();
   });
 }
 

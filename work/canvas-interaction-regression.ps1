@@ -74,6 +74,13 @@ $checks = @(
     Pass = $pointerDownBlock.IndexOf('if (event.button === 1)') -ge 0 -and $pointerDownBlock.IndexOf('if (event.button === 1)') -lt $pointerDownBlock.IndexOf('event.target.closest(".node-control-dock")')
   },
   @{
+    Name = 'middle-button pan has a clear active cursor and cancellation cleanup'
+    Pass = $app -match 'classList\.add\("is-panning"\)' -and
+      $app -match 'classList\.remove\("is-panning"\)' -and
+      $app -match 'pointercancel' -and
+      $styles -match '\.canvas-viewport\.is-panning'
+  },
+  @{
     Name = 'mouse wheel pans the canvas without changing zoom'
     Pass = $wheelBlock -match 'isZoomGesture' -and
       $wheelBlock -match 'state\.viewport\.y\s*[-+]=[\s\S]*?event\.deltaY[\s\S]*?render\(\);' -and
@@ -461,7 +468,7 @@ $checks = @(
   },
   @{
     Name = 'prompt fixes are cache-busted in the served page'
-    Pass = $html -match 'app\.js\?v=canvas-controls-6' -and $html -match 'styles\.css\?v=canvas-controls-6'
+    Pass = $html -match 'app\.js\?v=canvas-controls-7' -and $html -match 'styles\.css\?v=canvas-controls-7'
   },
   @{
     Name = 'server exposes a deployment health endpoint'

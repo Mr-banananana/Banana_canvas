@@ -221,6 +221,11 @@ button { cursor: pointer; }
   user-select: none;
 }
 
+.canvas-viewport.is-panning,
+.canvas-viewport.is-panning * {
+  cursor: grabbing !important;
+}
+
 .canvas-viewport::after {
   content: "";
   position: absolute;
