@@ -300,11 +300,11 @@ button { cursor: pointer; }
 }
 
 .node-palette {
-  position: absolute;
-  left: 28px;
-  top: 26px;
-  width: 374px;
-  max-height: calc(100% - 52px);
+  position: fixed;
+  left: 88px;
+  top: 82px;
+  width: min(374px, calc(100vw - 104px));
+  max-height: calc(100vh - 98px);
   overflow: auto;
   padding: 18px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -1032,8 +1032,10 @@ input:focus, select:focus, textarea:focus {
     box-shadow: var(--shadow);
   }
   .node-palette {
-    left: 12px;
+    left: 72px;
+    top: 76px;
     width: min(360px, calc(100vw - 92px));
+    max-height: calc(100vh - 92px);
   }
   .brand { min-width: 0; }
   .brand p, .zoom-label { display: none; }
@@ -2928,7 +2930,8 @@ select:focus {
 }
 
 .size-picker:hover .size-popover,
-.size-picker:focus-within .size-popover {
+.size-picker:focus-within .size-popover,
+.size-picker.is-open .size-popover {
   display: grid;
   gap: 16px;
 }

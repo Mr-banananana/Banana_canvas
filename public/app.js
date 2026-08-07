@@ -1606,11 +1606,65 @@ function positionNodeDock(card) {
   const dockRect = dock.getBoundingClientRect();
   const dockWidth = dockRect.width || maxWidth;
 
-  const left = nodeCenterX - dockWidth / 2;
-  const top = nodeBottom + gap;
+  const rawLeft = nodeCenterX - dockWidth / 2;
+  const maxLeft = Math.max(margin, viewportRect.width - dockWidth - margin);
+  const left = Math.min(Math.max(margin, rawLeft), maxLeft);
+  const dockHeight = dockRect.height || 174;
+  const otherCards = state.cards
+    .filter(other => other.id !== card.id)
+    .map(other => ({
+      left: state.viewport.x + other.x * scale,
+      top: state.viewport.y + other.y * scale,
+      right: state.viewport.x + (other.x + other.w) * scale,
+      bottom: state.viewport.y + (other.y + (other.layoutH ?? other.h)) * scale
+    }));
+  let top = nodeBottom + gap;
+  for (let index = 0; index <= otherCards.length; index += 1) {
+    const collision = otherCards.find(other => {
+      const otherBottom = other.bottom;
+      return left < other.right && left + dockWidth > other.left && top < otherBottom && top + dockHeight > other.top;
+    });
+    if (!collision) break;
+    const otherBottom = collision.bottom;
+    top = otherBottom + gap;
+  }
+
+  const dockOverflow = top + dockHeight - (viewportRect.height - margin);
+  if (dockOverflow > 0) {
+    state.viewport.y -= dockOverflow;
+    applyViewport();
+    positionNodeDock(card);
+    return;
+  }
 
   dock.style.left = `${Math.round(left)}px`;
   dock.style.top = `${Math.round(top)}px`;
+}
+
+function positionSizePopover() {
+  const picker = els.sizePicker;
+  const popover = els.sizePickerMenu;
+  if (!picker || !popover || picker.classList.contains("hidden")) return;
+  const viewportRect = els.viewport.getBoundingClientRect();
+  const pickerRect = picker.getBoundingClientRect();
+  const popoverRect = popover.getBoundingClientRect();
+  if (!popoverRect.width || !popoverRect.height) return;
+
+  const margin = 12;
+  const gap = 6;
+  const availableWidth = Math.max(0, viewportRect.width - popoverRect.width - margin * 2);
+  const desiredLeft = pickerRect.left - viewportRect.left;
+  const left = Math.min(Math.max(margin, desiredLeft), Math.max(margin, availableWidth + margin));
+  const spaceAbove = pickerRect.top - viewportRect.top - margin;
+  const opensAbove = spaceAbove >= popoverRect.height + gap || pickerRect.bottom - viewportRect.top > viewportRect.height / 2;
+  const desiredTop = opensAbove
+    ? pickerRect.top - viewportRect.top - popoverRect.height - gap
+    : pickerRect.bottom - viewportRect.top + gap;
+  const maxTop = Math.max(margin, viewportRect.height - popoverRect.height - margin);
+  const top = Math.min(Math.max(margin, desiredTop), maxTop);
+  popover.style.left = `${Math.round(left - (pickerRect.left - viewportRect.left))}px`;
+  popover.style.top = `${Math.round(top - (pickerRect.top - viewportRect.top))}px`;
+  popover.style.bottom = "auto";
 }
 function aspectButton(option, current) {
   return `<button type="button" class="size-choice aspect-choice ${option.id === current ? "selected" : ""}" data-size-action="aspect" data-value="${escapeAttr(option.id)}"><span class="aspect-icon-frame"><span class="aspect-icon" style="${aspectIconStyle(option)}"></span></span><strong>${escapeHtml(option.label)}</strong></button>`;
@@ -1742,7 +1796,10 @@ function renderInspector() {
   els.statusBox.classList.toggle("error", card.status === "error");
   els.resultBox.innerHTML = card.resultUrl ? `<a href="${escapeAttr(card.resultUrl)}" target="_blank" rel="noreferrer">打开生成结果</a>` : "";
   requestAnimationFrame(() => {
-    if (state.selectedId === card.id) positionNodeDock(card);
+    if (state.selectedId === card.id) {
+      positionNodeDock(card);
+      if (els.sizePicker.classList.contains("is-open")) positionSizePopover();
+    }
   });
 }
 
@@ -1777,6 +1834,19 @@ function updateSelected(patch, options = {}) {
 }
 
 function setupSizePicker() {
+  const openPopover = () => {
+    els.sizePicker.classList.add("is-open");
+    positionSizePopover();
+    requestAnimationFrame(positionSizePopover);
+  };
+  const closePopover = () => {
+    if (!els.sizePicker.matches(":focus-within")) els.sizePicker.classList.remove("is-open");
+  };
+  els.sizePicker.addEventListener("pointerenter", openPopover);
+  els.sizePicker.addEventListener("focusin", openPopover);
+  els.sizePickerButton.addEventListener("click", openPopover);
+  els.sizePicker.addEventListener("pointerleave", closePopover);
+  els.sizePicker.addEventListener("focusout", () => requestAnimationFrame(closePopover));
   els.sizePickerMenu.addEventListener("click", event => {
     const button = event.target.closest("button[data-size-action]");
     const card = selectedCard();
@@ -1784,6 +1854,7 @@ function setupSizePicker() {
     const patch = applySizePickerAction(card, button.dataset.sizeAction, button.dataset.value);
     updateSelected(patch, { render: false });
     renderInspector();
+    requestAnimationFrame(positionSizePopover);
   });
 }
 
