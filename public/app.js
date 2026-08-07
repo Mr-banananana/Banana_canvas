@@ -1963,8 +1963,18 @@ function setupCanvasEvents() {
     if (event.target.closest(".node-control-dock")) return;
     event.preventDefault();
     const multiplier = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? els.viewport.clientHeight : 1;
-    state.viewport.x -= Number(event.deltaX || 0) * multiplier;
-    state.viewport.y -= Number(event.deltaY || 0) * multiplier;
+    if (event.ctrlKey) {
+      const rect = els.viewport.getBoundingClientRect();
+      const pointerWorld = screenToWorld(event.clientX, event.clientY);
+      const zoomFactor = Math.pow(1.1, -Number(event.deltaY || 0) * multiplier / 100);
+      const nextScale = Math.min(2.5, Math.max(0.25, state.viewport.scale * zoomFactor));
+      state.viewport.scale = nextScale;
+      state.viewport.x = Math.round(event.clientX - rect.left - pointerWorld.x * nextScale);
+      state.viewport.y = Math.round(event.clientY - rect.top - pointerWorld.y * nextScale);
+    } else {
+      state.viewport.x -= Number(event.deltaX || 0) * multiplier;
+      state.viewport.y -= Number(event.deltaY || 0) * multiplier;
+    }
     render();
     save();
   }, { passive: false });
