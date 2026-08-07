@@ -179,6 +179,13 @@ $checks = @(
       $app -match 'function focusCard\('
   },
   @{
+    Name = 'minimap is visible by default at a readable size'
+    Pass = $html -match '<aside id="minimap" class="minimap"' -and
+      $html -match '<canvas id="minimapCanvas" width="300" height="190"' -and
+      $styles -match '\.minimap\s*\{[^}]*width:\s*300px' -and
+      $styles -match '\.minimap\s*\{[^}]*height:\s*190px'
+  },
+  @{
     Name = 'canvas exposes undo redo and named history snapshots'
     Pass = $html -match 'id="historyMenu"' -and
       $app -match 'function undoCanvas\(' -and
@@ -468,7 +475,7 @@ $checks = @(
   },
   @{
     Name = 'prompt fixes are cache-busted in the served page'
-    Pass = $html -match 'app\.js\?v=canvas-controls-7' -and $html -match 'styles\.css\?v=canvas-controls-7'
+    Pass = $html -match 'app\.js\?v=canvas-controls-8' -and $html -match 'styles\.css\?v=canvas-controls-8'
   },
   @{
     Name = 'server exposes a deployment health endpoint'

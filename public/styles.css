@@ -296,8 +296,12 @@ button { cursor: pointer; }
   z-index: 1;
 }
 
-.minimap { position: absolute; right: 18px; bottom: 18px; z-index: 12; width: 220px; height: 140px; padding: 6px; border: 1px solid rgba(231,255,37,.35); border-radius: 12px; background: rgba(16,18,17,.92); box-shadow: var(--shadow); }
+.minimap { position: absolute; right: 18px; bottom: 18px; z-index: 12; width: 300px; height: 190px; padding: 7px; border: 1px solid rgba(231,255,37,.35); border-radius: 14px; background: rgba(16,18,17,.94); box-shadow: var(--shadow); }
 .minimap canvas { width: 100%; height: 100%; display: block; border-radius: 7px; cursor: crosshair; }
+
+@media (max-width: 720px) {
+  .minimap { right: 10px; bottom: 10px; width: 250px; height: 160px; }
+}
 
 .canvas-help strong {
   color: var(--text);
