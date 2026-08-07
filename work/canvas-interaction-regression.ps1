@@ -180,6 +180,10 @@ $checks = @(
       $html -match 'Ctrl\+Z'
   },
   @{
+    Name = 'topbar dropdowns are not clipped by the scrolling command row'
+    Pass = $styles -notmatch '\.top-actions\s*\{[^}]*overflow-y:\s*hidden'
+  },
+  @{
     Name = 'commerce is a dedicated left-toolbar workspace entry'
     Pass = $html -match 'id="commerceTool"' -and $html -match 'data-tool="commerce"' -and $html -notmatch 'data-create="commerce"'
   },
@@ -444,7 +448,7 @@ $checks = @(
   },
   @{
     Name = 'prompt fixes are cache-busted in the served page'
-    Pass = $html -match 'app\.js\?v=canvas-controls-3' -and $html -match 'styles\.css\?v=canvas-controls-3'
+    Pass = $html -match 'app\.js\?v=canvas-controls-4' -and $html -match 'styles\.css\?v=canvas-controls-4'
   },
   @{
     Name = 'server exposes a deployment health endpoint'

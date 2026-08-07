@@ -2652,8 +2652,7 @@ select:focus {
 
 .top-actions {
   min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: visible;
   overscroll-behavior-x: contain;
   scrollbar-width: none;
 }
@@ -2699,6 +2698,8 @@ select:focus {
 
   .top-actions {
     flex: 1 1 auto;
+    overflow-x: auto;
+    overflow-y: visible;
   }
 }
 
