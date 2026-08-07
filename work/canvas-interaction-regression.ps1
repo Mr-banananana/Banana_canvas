@@ -117,9 +117,9 @@ $checks = @(
       $app -match 'top = otherBottom \+ gap'
   },
   @{
-    Name = 'selecting a low node makes room for its dock below'
-    Pass = $app -match 'const dockOverflow = top \+ dockHeight - \(viewportRect\.height - margin\)' -and
-      $app -match 'state\.viewport\.y -= dockOverflow'
+    Name = 'node dock may be clipped instead of panning the canvas'
+    Pass = $app -match 'dock\.style\.top = `\$\{Math\.round\(top\)\}px`' -and
+      $app -notmatch 'const dockOverflow = top \+ dockHeight'
   },
   @{
     Name = 'node palette is positioned as a viewport overlay'
@@ -461,7 +461,7 @@ $checks = @(
   },
   @{
     Name = 'prompt fixes are cache-busted in the served page'
-    Pass = $html -match 'app\.js\?v=canvas-controls-5' -and $html -match 'styles\.css\?v=canvas-controls-5'
+    Pass = $html -match 'app\.js\?v=canvas-controls-6' -and $html -match 'styles\.css\?v=canvas-controls-6'
   },
   @{
     Name = 'server exposes a deployment health endpoint'

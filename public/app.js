@@ -1631,14 +1631,6 @@ function positionNodeDock(card) {
     top = otherBottom + gap;
   }
 
-  const dockOverflow = top + dockHeight - (viewportRect.height - margin);
-  if (dockOverflow > 0) {
-    state.viewport.y -= dockOverflow;
-    applyViewport();
-    positionNodeDock(card);
-    return;
-  }
-
   dock.style.left = `${Math.round(left)}px`;
   dock.style.top = `${Math.round(top)}px`;
 }
