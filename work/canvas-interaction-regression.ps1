@@ -75,18 +75,23 @@ $checks = @(
   },
   @{
     Name = 'mouse wheel pans the canvas without changing zoom'
-    Pass = $wheelBlock -match 'if \(event\.ctrlKey\)' -and
+    Pass = $wheelBlock -match 'isZoomGesture' -and
       $wheelBlock -match 'state\.viewport\.y\s*[-+]=[\s\S]*?event\.deltaY[\s\S]*?render\(\);' -and
       $wheelBlock -match 'else' -and
       $wheelBlock -match 'state\.viewport\.scale\s*='
   },
   @{
     Name = 'ctrl wheel zooms around the pointer position'
-    Pass = $wheelBlock -match 'event\.ctrlKey' -and
-      $wheelBlock -match 'screenToWorld\(event\.clientX, event\.clientY\)' -and
+    Pass = $wheelBlock -match 'const isZoomGesture = event\.ctrlKey' -and
+      $wheelBlock -match 'clientToWorld\(event\.clientX, event\.clientY\)' -and
       $wheelBlock -match 'Math\.min\(2\.5[\s\S]*?Math\.max\(0\.25' -and
       $wheelBlock -match 'event\.clientX[\s\S]*?state\.viewport\.x' -and
       $wheelBlock -match 'event\.clientY[\s\S]*?state\.viewport\.y'
+  },
+  @{
+    Name = 'ctrl wheel is not blocked by the node dock guard'
+    Pass = $wheelBlock -match 'if \(!isZoomGesture && event\.target\.closest\("\.node-control-dock"\)\) return;' -and
+      $wheelBlock -match 'if \(isZoomGesture\)'
   },
   @{
     Name = 'edge anchors use measured node layout height'
@@ -439,7 +444,7 @@ $checks = @(
   },
   @{
     Name = 'prompt fixes are cache-busted in the served page'
-    Pass = $html -match 'app\.js\?v=canvas-controls-2' -and $html -match 'styles\.css\?v=canvas-controls-2'
+    Pass = $html -match 'app\.js\?v=canvas-controls-3' -and $html -match 'styles\.css\?v=canvas-controls-3'
   },
   @{
     Name = 'server exposes a deployment health endpoint'

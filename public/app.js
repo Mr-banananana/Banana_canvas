@@ -2031,12 +2031,13 @@ function handleUpload(event) {
 
 function setupCanvasEvents() {
   els.viewport.addEventListener("wheel", event => {
-    if (event.target.closest(".node-control-dock")) return;
+    const isZoomGesture = event.ctrlKey;
+    if (!isZoomGesture && event.target.closest(".node-control-dock")) return;
     event.preventDefault();
     const multiplier = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? els.viewport.clientHeight : 1;
-    if (event.ctrlKey) {
+    if (isZoomGesture) {
       const rect = els.viewport.getBoundingClientRect();
-      const pointerWorld = screenToWorld(event.clientX, event.clientY);
+      const pointerWorld = clientToWorld(event.clientX, event.clientY);
       const zoomFactor = Math.pow(1.1, -Number(event.deltaY || 0) * multiplier / 100);
       const nextScale = Math.min(2.5, Math.max(0.25, state.viewport.scale * zoomFactor));
       state.viewport.scale = nextScale;
