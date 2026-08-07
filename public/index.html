@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Banana Canvas</title>
-    <link rel="stylesheet" href="/styles.css?v=canvas-controls-8">
+    <link rel="stylesheet" href="/styles.css?v=canvas-controls-9">
   </head>
   <body>
     <div class="app">
@@ -21,6 +21,28 @@
           <span id="zoomLabel" class="zoom-label">100%</span>
           <button id="zoomIn" class="icon-btn" title="放大">+</button>
           <button id="fitView" class="text-btn">适配</button>
+          <div class="canvas-switcher">
+            <button id="openCanvasLibrary" class="text-btn canvas-switcher-button" type="button" aria-expanded="false">
+              <span class="canvas-switcher-icon">▦</span>
+              <span id="activeCanvasName">未命名画布</span>
+              <span class="canvas-switcher-caret">⌄</span>
+            </button>
+            <nav id="canvasLibraryMenu" class="canvas-library-menu hidden" aria-label="本地画布库">
+              <div class="canvas-library-head">
+                <div>
+                  <strong>我的画布</strong>
+                  <small>仅保存在此浏览器</small>
+                </div>
+                <button id="newCanvas" class="canvas-library-new" type="button">＋ 新建</button>
+              </div>
+              <div id="canvasLibraryList" class="canvas-library-list"></div>
+              <div class="canvas-library-actions">
+                <button id="saveCanvas" type="button">保存当前</button>
+                <button id="renameCanvas" type="button">重命名</button>
+                <button id="deleteCanvas" type="button" class="danger-text">删除</button>
+              </div>
+            </nav>
+          </div>
           <div class="canvas-search-wrap">
             <input id="canvasSearch" type="search" placeholder="搜索节点" aria-label="搜索节点">
             <div id="canvasSearchResults" class="canvas-search-results hidden"></div>
@@ -386,7 +408,7 @@
       </section>
     </div>
 
-    <script src="/app.js?v=canvas-controls-8"></script>
+    <script src="/app.js?v=canvas-controls-9"></script>
   </body>
 </html>
 

@@ -163,6 +163,30 @@ button { cursor: pointer; }
 .canvas-search-results strong { font-size: 12px; }
 .canvas-search-results span { color: var(--muted); font-size: 10px; }
 .canvas-search-results .canvas-layer-empty { padding: 12px 10px; color: var(--muted); font-size: 11px; text-align: center; }
+.canvas-switcher { position: relative; }
+.canvas-switcher-button { display: inline-flex; align-items: center; gap: 7px; max-width: 190px; }
+.canvas-switcher-button #activeCanvasName { max-width: 112px; overflow: hidden; text-overflow: ellipsis; }
+.canvas-switcher-icon { color: var(--banana); font-size: 15px; }
+.canvas-switcher-caret { color: var(--muted); font-size: 14px; }
+.canvas-library-menu { position: absolute; top: 46px; left: 0; z-index: 90; width: 300px; display: grid; gap: 10px; padding: 12px; border: 1px solid rgba(247,223,74,.24); border-radius: 15px; background: rgba(22,25,22,.98); box-shadow: 0 20px 48px rgba(0,0,0,.46); }
+.canvas-library-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 3px 3px 8px; border-bottom: 1px solid var(--line); }
+.canvas-library-head div { display: grid; gap: 3px; }
+.canvas-library-head strong { color: var(--text); font-size: 13px; }
+.canvas-library-head small { color: var(--muted); font-size: 10px; }
+.canvas-library-new { min-height: 30px; padding: 0 9px; border: 1px solid rgba(247,223,74,.28); border-radius: 9px; background: rgba(247,223,74,.1); color: var(--banana); font: inherit; font-size: 11px; font-weight: 850; }
+.canvas-library-new:hover { background: rgba(247,223,74,.2); }
+.canvas-library-list { display: grid; gap: 4px; max-height: 260px; overflow: auto; }
+.canvas-library-list:empty::after { content: "暂无本地画布"; padding: 18px 8px; color: var(--muted); font-size: 11px; text-align: center; }
+.canvas-library-item { width: 100%; min-height: 52px; display: grid; grid-template-columns: 1fr auto; gap: 3px 8px; padding: 8px 9px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--text); text-align: left; }
+.canvas-library-item:hover { background: rgba(247,223,74,.09); border-color: rgba(247,223,74,.18); }
+.canvas-library-item.active { background: rgba(247,223,74,.13); border-color: rgba(247,223,74,.42); }
+.canvas-library-item strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.canvas-library-item small { grid-column: 1 / -1; color: var(--muted); font-size: 10px; }
+.canvas-library-item mark { padding: 2px 5px; border-radius: 5px; background: var(--banana); color: #111400; font-size: 9px; font-weight: 900; }
+.canvas-library-actions { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 5px; padding-top: 8px; border-top: 1px solid var(--line); }
+.canvas-library-actions button { min-height: 31px; border: 1px solid var(--line); border-radius: 8px; background: rgba(31,33,31,.9); color: var(--text); font: inherit; font-size: 10px; font-weight: 800; }
+.canvas-library-actions button:hover { border-color: var(--banana); color: var(--banana); }
+.canvas-library-actions .danger-text:hover { border-color: rgba(255,104,104,.6); color: #ff9090; }
 .canvas-tools-menu, .history-menu { position: absolute; top: 46px; right: 116px; z-index: 80; width: 210px; display: grid; gap: 3px; padding: 8px; border: 1px solid var(--line); border-radius: 13px; background: rgba(24,26,25,.98); box-shadow: var(--shadow); }
 .history-menu { right: 52px; }
 .canvas-tools-menu button, .history-menu button { width: 100%; min-height: 34px; display: flex; align-items: center; justify-content: space-between; padding: 0 9px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font-size: 12px; text-align: left; }

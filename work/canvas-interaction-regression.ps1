@@ -164,6 +164,22 @@ $checks = @(
       $app -match 'canvasSnapshot'
   },
   @{
+    Name = 'local canvas library supports migration, switching, and persistence'
+    Pass = $html -match 'id="openCanvasLibrary"' -and
+      $html -match 'id="newCanvas"' -and
+      $html -match 'id="canvasLibraryList"' -and
+      $app -match 'CANVAS_LIBRARY_SCHEMA' -and
+      $app -match 'function switchCanvas\(' -and
+      $app -match 'function createNewCanvas\(' -and
+      $app -match 'Array\.isArray\(saved\.canvases\)'
+  },
+  @{
+    Name = 'canvas library exports and imports all local workflows'
+    Pass = $app -match 'canvases: cloneData\(canvasLibrary\.canvases\)' -and
+      $app -match 'if \(Array\.isArray\(data\.canvases\)\)' -and
+      $app -match 'applyCanvasRecord\(activeCanvasRecord\(\)\)'
+  },
+  @{
     Name = 'canvas supports grouping and dependency-aware auto layout'
     Pass = $html -match 'id="groupSelection"' -and
       $html -match 'id="autoLayout"' -and
@@ -475,7 +491,7 @@ $checks = @(
   },
   @{
     Name = 'prompt fixes are cache-busted in the served page'
-    Pass = $html -match 'app\.js\?v=canvas-controls-8' -and $html -match 'styles\.css\?v=canvas-controls-8'
+    Pass = $html -match 'app\.js\?v=canvas-controls-9' -and $html -match 'styles\.css\?v=canvas-controls-9'
   },
   @{
     Name = 'server exposes a deployment health endpoint'

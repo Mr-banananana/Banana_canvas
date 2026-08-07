@@ -1,6 +1,7 @@
 const STORAGE_KEY = "local-ai-canvas-state-v2";
 const SETTINGS_KEY = "local-ai-canvas-settings-v1";
 const API_KEY_SESSION = "local-ai-canvas-api-key";
+const CANVAS_LIBRARY_SCHEMA = "banana-canvas-library-v1";
 const SVG_OFFSET = 5000;
 const DRAG_EDGE_MARGIN = 84;
 const DRAG_EDGE_MAX_SPEED = 560;
@@ -80,7 +81,15 @@ const els = {
   customResultPath: document.getElementById("customResultPath"),
   canvasSearch: document.getElementById("canvasSearch"),
   canvasSearchResults: document.getElementById("canvasSearchResults"),
-  canvasSnapshotList: document.getElementById("canvasSnapshotList")
+  canvasSnapshotList: document.getElementById("canvasSnapshotList"),
+  openCanvasLibrary: document.getElementById("openCanvasLibrary"),
+  canvasLibraryMenu: document.getElementById("canvasLibraryMenu"),
+  activeCanvasName: document.getElementById("activeCanvasName"),
+  canvasLibraryList: document.getElementById("canvasLibraryList"),
+  newCanvas: document.getElementById("newCanvas"),
+  saveCanvas: document.getElementById("saveCanvas"),
+  renameCanvas: document.getElementById("renameCanvas"),
+  deleteCanvas: document.getElementById("deleteCanvas")
 };
 
 const state = {
@@ -140,6 +149,11 @@ const state = {
 
 let saveTimer = null;
 let lastCanvasSnapshot = null;
+let canvasLibrary = {
+  schema: CANVAS_LIBRARY_SCHEMA,
+  activeCanvasId: "canvas_default",
+  canvases: []
+};
 
 const settings = {
   provider: "agnes",
@@ -259,21 +273,187 @@ function setApiKey(value) {
   else sessionStorage.removeItem(API_KEY_SESSION);
 }
 
+function createCanvasRecord(name = "未命名画布", source = {}) {
+  const now = Date.now();
+  return {
+    id: String(source.id || uid("canvas")),
+    name: String(name || "未命名画布").trim().slice(0, 40) || "未命名画布",
+    createdAt: Number(source.createdAt || now),
+    updatedAt: Number(source.updatedAt || now),
+    cards: Array.isArray(source.cards) ? cloneData(source.cards) : [],
+    edges: Array.isArray(source.edges) ? cloneData(source.edges) : [],
+    groups: Array.isArray(source.groups) ? cloneData(source.groups) : [],
+    canvasSnapshots: normalizeCanvasSnapshots(source.canvasSnapshots),
+    viewport: {
+      x: Number(source.viewport?.x ?? 300),
+      y: Number(source.viewport?.y ?? 160),
+      scale: Math.min(2.5, Math.max(0.25, Number(source.viewport?.scale || 1)))
+    },
+    workspaceMode: ["commerce", "product-video"].includes(source.workspaceMode) ? source.workspaceMode : "canvas",
+    commerceWorkspace: normalizeCommerceWorkspace(source.commerceWorkspace || {}),
+    productVideoWorkspace: normalizeProductVideoWorkspace(source.productVideoWorkspace || {})
+  };
+}
+
+function captureCurrentCanvas() {
+  const existing = canvasLibrary.canvases.find(canvas => canvas.id === canvasLibrary.activeCanvasId) || {};
+  return createCanvasRecord(existing.name || "未命名画布", {
+    ...existing,
+    id: canvasLibrary.activeCanvasId,
+    updatedAt: Date.now(),
+    cards: state.cards,
+    edges: state.edges,
+    groups: state.groups,
+    canvasSnapshots: state.canvasSnapshots,
+    viewport: state.viewport,
+    workspaceMode: state.workspaceMode,
+    commerceWorkspace: state.commerceWorkspace,
+    productVideoWorkspace: state.productVideoWorkspace
+  });
+}
+
+function persistCanvasLibrary() {
+  if (!canvasLibrary.canvases.length) {
+    const canvas = createCanvasRecord("未命名画布", { id: canvasLibrary.activeCanvasId });
+    canvasLibrary.canvases = [canvas];
+    canvasLibrary.activeCanvasId = canvas.id;
+  }
+  const current = captureCurrentCanvas();
+  const index = canvasLibrary.canvases.findIndex(canvas => canvas.id === canvasLibrary.activeCanvasId);
+  if (index >= 0) canvasLibrary.canvases[index] = current;
+  else canvasLibrary.canvases.push(current);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({
+    schema: CANVAS_LIBRARY_SCHEMA,
+    activeCanvasId: canvasLibrary.activeCanvasId,
+    canvases: canvasLibrary.canvases
+  }));
+  renderCanvasLibrary();
+}
+
+function applyCanvasRecord(record) {
+  const canvas = createCanvasRecord(record?.name || "未命名画布", record || {});
+  state.cards = canvas.cards;
+  state.edges = canvas.edges;
+  state.groups = canvas.groups;
+  state.canvasSnapshots = canvas.canvasSnapshots;
+  state.viewport = canvas.viewport;
+  state.workspaceMode = canvas.workspaceMode;
+  state.commerceWorkspace = canvas.commerceWorkspace;
+  state.productVideoWorkspace = canvas.productVideoWorkspace;
+  state.historyPast = [];
+  state.historyFuture = [];
+  state.historyRestoring = false;
+  setSelected([]);
+  normalizeCanvasState();
+  lastCanvasSnapshot = canvasSnapshot();
+}
+
+function activeCanvasRecord() {
+  return canvasLibrary.canvases.find(canvas => canvas.id === canvasLibrary.activeCanvasId) || null;
+}
+
+function renderCanvasLibrary() {
+  if (!els.canvasLibraryList || !els.activeCanvasName) return;
+  const active = activeCanvasRecord();
+  els.activeCanvasName.textContent = active?.name || "未命名画布";
+  els.canvasLibraryList.innerHTML = canvasLibrary.canvases.map(canvas => {
+    const activeClass = canvas.id === canvasLibrary.activeCanvasId ? " active" : "";
+    const marker = canvas.id === canvasLibrary.activeCanvasId ? "<mark>当前</mark>" : "";
+    const count = Array.isArray(canvas.cards) ? canvas.cards.length : 0;
+    const updated = canvas.updatedAt ? new Date(canvas.updatedAt).toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "未保存";
+    return `<button type="button" class="canvas-library-item${activeClass}" data-canvas-id="${escapeAttr(canvas.id)}"><strong>${escapeHtml(canvas.name)}</strong>${marker}<small>${count} 个节点 · ${escapeHtml(updated)}</small></button>`;
+  }).join("");
+  els.deleteCanvas.disabled = canvasLibrary.canvases.length <= 1;
+}
+
+function closeCanvasLibrary() {
+  els.canvasLibraryMenu?.classList.add("hidden");
+  els.openCanvasLibrary?.setAttribute("aria-expanded", "false");
+}
+
+function switchCanvas(id) {
+  const target = canvasLibrary.canvases.find(canvas => canvas.id === id);
+  if (!target || target.id === canvasLibrary.activeCanvasId) {
+    closeCanvasLibrary();
+    return;
+  }
+  save();
+  canvasLibrary.activeCanvasId = target.id;
+  applyCanvasRecord(target);
+  closeCanvasLibrary();
+  hideContextMenu();
+  hideConnectionCreateMenu();
+  els.nodePalette.classList.add("hidden");
+  if (state.workspaceMode === "commerce") renderCommerceWorkspace();
+  else if (state.workspaceMode === "product-video") renderProductVideoWorkspace();
+  else render();
+  save();
+}
+
+function createNewCanvas() {
+  save();
+  const canvas = createCanvasRecord(`新画布 ${canvasLibrary.canvases.length + 1}`, { id: uid("canvas") });
+  canvasLibrary.canvases.push(canvas);
+  canvasLibrary.activeCanvasId = canvas.id;
+  applyCanvasRecord(canvas);
+  closeCanvasLibrary();
+  render();
+  save();
+}
+
+function renameActiveCanvas() {
+  const active = activeCanvasRecord();
+  if (!active) return;
+  const name = window.prompt("输入画布名称", active.name);
+  if (name === null) return;
+  const nextName = name.trim().slice(0, 40);
+  if (!nextName) return;
+  active.name = nextName;
+  active.updatedAt = Date.now();
+  save();
+}
+
+function deleteActiveCanvas() {
+  if (canvasLibrary.canvases.length <= 1) return;
+  const active = activeCanvasRecord();
+  if (!active || !window.confirm(`删除“${active.name}”？此操作不可撤销。`)) return;
+  const index = canvasLibrary.canvases.findIndex(canvas => canvas.id === active.id);
+  canvasLibrary.canvases.splice(index, 1);
+  const next = canvasLibrary.canvases[Math.max(0, index - 1)];
+  canvasLibrary.activeCanvasId = next.id;
+  applyCanvasRecord(next);
+  closeCanvasLibrary();
+  render();
+  save();
+}
+
 function load() {
   try { Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}")); } catch {}
   settings.pollInterval = normalizePollInterval(settings.pollInterval);
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || localStorage.getItem("local-ai-canvas-state-v1") || "{}");
-    if (Array.isArray(saved.cards)) state.cards = saved.cards;
-    if (Array.isArray(saved.edges)) state.edges = saved.edges;
-    if (Array.isArray(saved.groups)) state.groups = saved.groups;
-    if (Array.isArray(saved.canvasSnapshots)) state.canvasSnapshots = normalizeCanvasSnapshots(saved.canvasSnapshots);
-    if (saved.viewport) state.viewport = saved.viewport;
-    if (saved.commerceWorkspace) state.commerceWorkspace = normalizeCommerceWorkspace(saved.commerceWorkspace);
-    if (saved.productVideoWorkspace) state.productVideoWorkspace = normalizeProductVideoWorkspace(saved.productVideoWorkspace);
-    if (saved.workspaceMode === "commerce") state.workspaceMode = "commerce";
-    if (saved.workspaceMode === "product-video") state.workspaceMode = "product-video";
+    if (Array.isArray(saved.canvases)) {
+      canvasLibrary = {
+        schema: CANVAS_LIBRARY_SCHEMA,
+        activeCanvasId: String(saved.activeCanvasId || saved.canvases[0]?.id || "canvas_default"),
+        canvases: saved.canvases.map(canvas => createCanvasRecord(canvas.name, canvas))
+      };
+    } else {
+      const legacy = createCanvasRecord("未命名画布", { id: "canvas_default", ...saved });
+      canvasLibrary = { schema: CANVAS_LIBRARY_SCHEMA, activeCanvasId: legacy.id, canvases: [legacy] };
+    }
+    if (!canvasLibrary.canvases.length) {
+      const blank = createCanvasRecord("未命名画布", { id: "canvas_default" });
+      canvasLibrary = { schema: CANVAS_LIBRARY_SCHEMA, activeCanvasId: blank.id, canvases: [blank] };
+    }
+    if (!canvasLibrary.canvases.some(canvas => canvas.id === canvasLibrary.activeCanvasId)) canvasLibrary.activeCanvasId = canvasLibrary.canvases[0].id;
+    applyCanvasRecord(activeCanvasRecord());
   } catch {}
+  if (!canvasLibrary.canvases.length) {
+    const blank = createCanvasRecord("未命名画布", { id: "canvas_default" });
+    canvasLibrary = { schema: CANVAS_LIBRARY_SCHEMA, activeCanvasId: blank.id, canvases: [blank] };
+    applyCanvasRecord(blank);
+  }
   migrateLegacyCommerceNodes();
   state.cards.forEach(card => normalizeCard(card));
   state.edges = state.edges.filter(edge => findCard(edge.from) && findCard(edge.to) && edge.from !== edge.to);
@@ -338,16 +518,7 @@ function save() {
     state.historyFuture = [];
   }
   lastCanvasSnapshot = nextSnapshot;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    cards: state.cards,
-    edges: state.edges,
-    groups: state.groups,
-    canvasSnapshots: state.canvasSnapshots,
-    viewport: state.viewport,
-    workspaceMode: state.workspaceMode,
-    commerceWorkspace: state.commerceWorkspace,
-    productVideoWorkspace: state.productVideoWorkspace
-  }));
+  persistCanvasLibrary();
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   els.saveState.textContent = `已保存 ${new Date().toLocaleTimeString()}`;
   renderHistoryMenu();
@@ -2292,15 +2463,35 @@ function setupTopbar() {
 function setupCanvasManagement() {
   const toolsMenu = document.getElementById("canvasToolsMenu");
   const historyMenu = document.getElementById("historyMenu");
+  const canvasLibraryMenu = els.canvasLibraryMenu;
+  els.openCanvasLibrary.addEventListener("click", event => {
+    event.stopPropagation();
+    const opening = canvasLibraryMenu.classList.contains("hidden");
+    toolsMenu.classList.add("hidden");
+    historyMenu.classList.add("hidden");
+    canvasLibraryMenu.classList.toggle("hidden", !opening);
+    els.openCanvasLibrary.setAttribute("aria-expanded", String(opening));
+    if (opening) renderCanvasLibrary();
+  });
+  els.canvasLibraryList.addEventListener("click", event => {
+    const button = event.target.closest("[data-canvas-id]");
+    if (button) switchCanvas(button.dataset.canvasId);
+  });
+  els.newCanvas.addEventListener("click", createNewCanvas);
+  els.saveCanvas.addEventListener("click", () => { save(); closeCanvasLibrary(); });
+  els.renameCanvas.addEventListener("click", renameActiveCanvas);
+  els.deleteCanvas.addEventListener("click", deleteActiveCanvas);
   document.getElementById("openCanvasTools").addEventListener("click", event => {
     event.stopPropagation();
     toolsMenu.classList.toggle("hidden");
     historyMenu.classList.add("hidden");
+    closeCanvasLibrary();
   });
   document.getElementById("openHistory").addEventListener("click", event => {
     event.stopPropagation();
     historyMenu.classList.toggle("hidden");
     toolsMenu.classList.add("hidden");
+    closeCanvasLibrary();
     renderHistoryMenu();
   });
   document.getElementById("groupSelection").addEventListener("click", () => { groupSelectedCards(); toolsMenu.classList.add("hidden"); });
@@ -2345,8 +2536,10 @@ function setupCanvasManagement() {
   window.addEventListener("click", event => {
     if (!event.target.closest(".canvas-tools-menu") && !event.target.closest("#openCanvasTools")) toolsMenu.classList.add("hidden");
     if (!event.target.closest(".history-menu") && !event.target.closest("#openHistory")) historyMenu.classList.add("hidden");
+    if (!event.target.closest(".canvas-library-menu") && !event.target.closest("#openCanvasLibrary")) closeCanvasLibrary();
   });
   renderHistoryMenu();
+  renderCanvasLibrary();
 }
 
 function fitView() {
@@ -2370,7 +2563,13 @@ function fitView() {
 }
 
 function exportJson() {
-  const blob = new Blob([JSON.stringify({ cards: state.cards, edges: state.edges, groups: state.groups, canvasSnapshots: state.canvasSnapshots, viewport: state.viewport, settings, commerceWorkspace: state.commerceWorkspace, productVideoWorkspace: state.productVideoWorkspace }, null, 2)], { type: "application/json" });
+  save();
+  const blob = new Blob([JSON.stringify({
+    schema: CANVAS_LIBRARY_SCHEMA,
+    activeCanvasId: canvasLibrary.activeCanvasId,
+    canvases: cloneData(canvasLibrary.canvases),
+    settings
+  }, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -2386,14 +2585,28 @@ function importJson(event) {
   reader.onload = () => {
     try {
       const data = JSON.parse(reader.result);
-      if (Array.isArray(data.cards)) state.cards = data.cards;
-      if (Array.isArray(data.edges)) state.edges = data.edges;
-      if (Array.isArray(data.groups)) state.groups = data.groups;
-      if (Array.isArray(data.canvasSnapshots)) state.canvasSnapshots = normalizeCanvasSnapshots(data.canvasSnapshots);
-      if (data.viewport) state.viewport = data.viewport;
+      if (Array.isArray(data.canvases)) {
+        const imported = data.canvases.map(canvas => createCanvasRecord(canvas.name, canvas));
+        if (!imported.length) throw new Error("文件中没有可用画布");
+        canvasLibrary = {
+          schema: CANVAS_LIBRARY_SCHEMA,
+          activeCanvasId: String(data.activeCanvasId || imported[0].id),
+          canvases: imported
+        };
+        if (!canvasLibrary.canvases.some(canvas => canvas.id === canvasLibrary.activeCanvasId)) canvasLibrary.activeCanvasId = canvasLibrary.canvases[0].id;
+        applyCanvasRecord(activeCanvasRecord());
+      } else {
+        if (Array.isArray(data.cards)) state.cards = data.cards;
+        if (Array.isArray(data.edges)) state.edges = data.edges;
+        if (Array.isArray(data.groups)) state.groups = data.groups;
+        if (Array.isArray(data.canvasSnapshots)) state.canvasSnapshots = normalizeCanvasSnapshots(data.canvasSnapshots);
+        if (data.viewport) state.viewport = data.viewport;
+      }
       if (data.settings) Object.assign(settings, data.settings);
-      if (data.commerceWorkspace) state.commerceWorkspace = normalizeCommerceWorkspace(data.commerceWorkspace);
-      if (data.productVideoWorkspace) state.productVideoWorkspace = normalizeProductVideoWorkspace(data.productVideoWorkspace);
+      if (!Array.isArray(data.canvases)) {
+        if (data.commerceWorkspace) state.commerceWorkspace = normalizeCommerceWorkspace(data.commerceWorkspace);
+        if (data.productVideoWorkspace) state.productVideoWorkspace = normalizeProductVideoWorkspace(data.productVideoWorkspace);
+      }
       migrateLegacyCommerceNodes();
       normalizeCanvasState();
       setSelected([]);
