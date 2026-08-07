@@ -96,6 +96,7 @@ button { cursor: pointer; }
   display: flex;
   align-items: center;
   gap: 8px;
+  position: relative;
 }
 
 .icon-btn, .tool {
@@ -152,6 +153,25 @@ button { cursor: pointer; }
 }
 
 .file-label input, #uploadInput { display: none; }
+
+.canvas-search-wrap { position: relative; width: 150px; }
+.canvas-search-wrap input { width: 100%; height: 36px; border: 1px solid var(--line); border-radius: 12px; padding: 0 11px; background: #1c1d1e; color: var(--text); outline: none; }
+.canvas-search-wrap input:focus { border-color: var(--banana); box-shadow: 0 0 0 3px rgba(231,255,37,.1); }
+.canvas-search-results { position: absolute; top: 42px; right: 0; z-index: 80; width: 280px; max-height: 300px; overflow: auto; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: rgba(24,26,25,.98); box-shadow: var(--shadow); }
+.canvas-search-results button { width: 100%; display: grid; gap: 3px; padding: 9px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text); text-align: left; }
+.canvas-search-results button:hover { background: rgba(231,255,37,.12); }
+.canvas-search-results strong { font-size: 12px; }
+.canvas-search-results span { color: var(--muted); font-size: 10px; }
+.canvas-search-results .canvas-layer-empty { padding: 12px 10px; color: var(--muted); font-size: 11px; text-align: center; }
+.canvas-tools-menu, .history-menu { position: absolute; top: 46px; right: 116px; z-index: 80; width: 210px; display: grid; gap: 3px; padding: 8px; border: 1px solid var(--line); border-radius: 13px; background: rgba(24,26,25,.98); box-shadow: var(--shadow); }
+.history-menu { right: 52px; }
+.canvas-tools-menu button, .history-menu button { width: 100%; min-height: 34px; display: flex; align-items: center; justify-content: space-between; padding: 0 9px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font-size: 12px; text-align: left; }
+.canvas-tools-menu button:hover, .history-menu button:hover { background: rgba(231,255,37,.12); }
+.canvas-tools-menu button span, .history-menu button span { color: var(--muted); font-size: 10px; }
+.canvas-tools-menu hr, .history-menu hr { width: 100%; margin: 5px 0; border: 0; border-top: 1px solid var(--line); }
+.canvas-snapshot-list { display: grid; gap: 4px; max-height: 180px; overflow: auto; }
+.canvas-snapshot-list:empty::after { content: "暂无历史快照"; padding: 10px; color: var(--muted); font-size: 11px; text-align: center; }
+.canvas-snapshot-list button { min-height: 30px; }
 
 .workspace {
   min-height: 0;
@@ -221,6 +241,13 @@ button { cursor: pointer; }
   z-index: 2;
 }
 
+.canvas-group { position: absolute; z-index: 0; padding: 34px 12px 12px; border: 1px solid rgba(231,255,37,.38); border-radius: 16px; background: rgba(231,255,37,.045); pointer-events: none; }
+.canvas-group-title { position: absolute; top: 7px; left: 10px; display: flex; align-items: center; gap: 6px; pointer-events: auto; }
+.canvas-group-title input { width: 150px; border: 0; background: transparent; color: var(--banana-soft); font-weight: 850; outline: none; }
+.canvas-group-title button { width: 23px; height: 23px; border: 1px solid rgba(255,255,255,.16); border-radius: 7px; background: rgba(0,0,0,.25); color: var(--muted); }
+.canvas-group-title button:hover { color: var(--danger); border-color: var(--danger); }
+.canvas-group-label { position: absolute; right: 10px; top: 10px; color: rgba(231,255,37,.58); font-size: 10px; letter-spacing: .08em; }
+
 .connection-svg {
   position: absolute;
   left: -5000px;
@@ -263,6 +290,9 @@ button { cursor: pointer; }
   pointer-events: none;
   z-index: 1;
 }
+
+.minimap { position: absolute; right: 18px; bottom: 18px; z-index: 12; width: 220px; height: 140px; padding: 6px; border: 1px solid rgba(231,255,37,.35); border-radius: 12px; background: rgba(16,18,17,.92); box-shadow: var(--shadow); }
+.minimap canvas { width: 100%; height: 100%; display: block; border-radius: 7px; cursor: crosshair; }
 
 .canvas-help strong {
   color: var(--text);
@@ -857,6 +887,12 @@ button { cursor: pointer; }
   .commerce-workspace-form { padding: 24px 18px 30px; }
   .commerce-workspace-results { padding: 24px 18px 30px; }
   .commerce-asset-grid { grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 10px; }
+}
+
+@media (max-width: 1080px) {
+  .canvas-search-wrap { width: 120px; }
+  .top-actions { gap: 5px; }
+  .top-actions .text-btn { padding-left: 9px; padding-right: 9px; }
 }
 
 @media (max-width: 720px) {

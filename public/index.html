@@ -21,6 +21,27 @@
           <span id="zoomLabel" class="zoom-label">100%</span>
           <button id="zoomIn" class="icon-btn" title="放大">+</button>
           <button id="fitView" class="text-btn">适配</button>
+          <div class="canvas-search-wrap">
+            <input id="canvasSearch" type="search" placeholder="搜索节点" aria-label="搜索节点">
+            <div id="canvasSearchResults" class="canvas-search-results hidden"></div>
+          </div>
+          <button id="openCanvasTools" class="text-btn">画布工具</button>
+          <nav id="canvasToolsMenu" class="canvas-tools-menu hidden" aria-label="画布工具">
+            <button id="groupSelection" type="button">新建分组 <span>Ctrl+G</span></button>
+            <button id="ungroupSelection" type="button">取消分组</button>
+            <hr>
+            <button id="autoLayout" type="button">整理所选节点</button>
+            <button id="autoLayoutAll" type="button">整理全部节点</button>
+            <button id="toggleMinimap" type="button">显示/隐藏小地图</button>
+          </nav>
+          <nav id="historyMenu" class="history-menu hidden" aria-label="历史记录">
+            <button id="undoCanvas" type="button">撤销 <span>Ctrl+Z</span></button>
+            <button id="redoCanvas" type="button">重做 <span>Ctrl+Shift+Z</span></button>
+            <hr>
+            <button id="createCanvasSnapshot" type="button">保存历史快照</button>
+            <div id="canvasSnapshotList" class="canvas-snapshot-list"></div>
+          </nav>
+          <button id="openHistory" class="text-btn">历史</button>
           <button id="openShortcuts" class="text-btn">操作说明</button>
           <button id="exportJson" class="text-btn">导出</button>
           <label class="text-btn file-label">
@@ -74,6 +95,9 @@
             <span>文本连到图片/视频作为提示词，图片连到图片/视频作为参考素材。</span>
           </div>
           <div id="canvasStage" class="canvas-stage"></div>
+          <aside id="minimap" class="minimap hidden" aria-label="画布小地图">
+            <canvas id="minimapCanvas" width="220" height="140"></canvas>
+          </aside>
 
           <aside id="nodeControlDock" class="node-control-dock hidden" aria-label="节点操作面板">
             <div id="inspectorEmpty" class="empty-panel hidden">

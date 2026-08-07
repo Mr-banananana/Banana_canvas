@@ -75,12 +75,17 @@ const els = {
   customEndpoint: document.getElementById("customEndpoint"),
   customMethod: document.getElementById("customMethod"),
   customBody: document.getElementById("customBody"),
-  customResultPath: document.getElementById("customResultPath")
+  customResultPath: document.getElementById("customResultPath"),
+  canvasSearch: document.getElementById("canvasSearch"),
+  canvasSearchResults: document.getElementById("canvasSearchResults"),
+  canvasSnapshotList: document.getElementById("canvasSnapshotList")
 };
 
 const state = {
   cards: [],
   edges: [],
+  groups: [],
+  canvasSnapshots: [],
   selectedId: null,
   selectedIds: [],
   viewport: { x: 300, y: 160, scale: 1 },
@@ -92,6 +97,9 @@ const state = {
   contextWorld: null,
   pendingConnection: null,
   pendingUploadConnection: null,
+  historyPast: [],
+  historyFuture: [],
+  historyRestoring: false,
   suppressNextClick: false,
   workspaceMode: "canvas",
   commerceWorkspace: {
@@ -129,6 +137,7 @@ const state = {
 };
 
 let saveTimer = null;
+let lastCanvasSnapshot = null;
 
 const settings = {
   provider: "agnes",
@@ -198,6 +207,47 @@ function uid(prefix = "card") {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function cloneData(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function canvasSnapshot() {
+  return {
+    cards: cloneData(state.cards),
+    edges: cloneData(state.edges),
+    groups: cloneData(state.groups)
+  };
+}
+
+function snapshotKey(snapshot) {
+  return JSON.stringify(snapshot || {});
+}
+
+function normalizeCanvasGroup(group = {}) {
+  const memberIds = Array.isArray(group.memberIds) ? group.memberIds.map(String).filter(id => state.cards.some(card => card.id === id)) : [];
+  return {
+    id: String(group.id || uid("group")),
+    name: String(group.name || "未命名分组").trim().slice(0, 32) || "未命名分组",
+    memberIds: [...new Set(memberIds)],
+    color: String(group.color || "#e7ff25"),
+    createdAt: Number(group.createdAt || Date.now())
+  };
+}
+
+function normalizeCanvasSnapshots(snapshots) {
+  if (!Array.isArray(snapshots)) return [];
+  return snapshots.slice(0, 12).map(snapshot => ({
+    id: String(snapshot.id || uid("snapshot")),
+    name: String(snapshot.name || "历史快照").slice(0, 32),
+    createdAt: Number(snapshot.createdAt || Date.now()),
+    state: {
+      cards: Array.isArray(snapshot.state?.cards) ? snapshot.state.cards : [],
+      edges: Array.isArray(snapshot.state?.edges) ? snapshot.state.edges : [],
+      groups: Array.isArray(snapshot.state?.groups) ? snapshot.state.groups : []
+    }
+  }));
+}
+
 function getApiKey() {
   return sessionStorage.getItem(API_KEY_SESSION) || "";
 }
@@ -214,6 +264,8 @@ function load() {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || localStorage.getItem("local-ai-canvas-state-v1") || "{}");
     if (Array.isArray(saved.cards)) state.cards = saved.cards;
     if (Array.isArray(saved.edges)) state.edges = saved.edges;
+    if (Array.isArray(saved.groups)) state.groups = saved.groups;
+    if (Array.isArray(saved.canvasSnapshots)) state.canvasSnapshots = normalizeCanvasSnapshots(saved.canvasSnapshots);
     if (saved.viewport) state.viewport = saved.viewport;
     if (saved.commerceWorkspace) state.commerceWorkspace = normalizeCommerceWorkspace(saved.commerceWorkspace);
     if (saved.productVideoWorkspace) state.productVideoWorkspace = normalizeProductVideoWorkspace(saved.productVideoWorkspace);
@@ -223,6 +275,8 @@ function load() {
   migrateLegacyCommerceNodes();
   state.cards.forEach(card => normalizeCard(card));
   state.edges = state.edges.filter(edge => findCard(edge.from) && findCard(edge.to) && edge.from !== edge.to);
+  state.groups = state.groups.map(normalizeCanvasGroup).filter(group => group.memberIds.length);
+  lastCanvasSnapshot = canvasSnapshot();
   els.apiKey.value = getApiKey();
   syncSettingsForm();
 }
@@ -274,9 +328,19 @@ function save() {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
+  state.groups = state.groups.map(normalizeCanvasGroup).filter(group => group.memberIds.length);
+  const nextSnapshot = canvasSnapshot();
+  if (!state.historyRestoring && lastCanvasSnapshot && snapshotKey(nextSnapshot) !== snapshotKey(lastCanvasSnapshot)) {
+    state.historyPast.push(cloneData(lastCanvasSnapshot));
+    state.historyPast = state.historyPast.slice(-50);
+    state.historyFuture = [];
+  }
+  lastCanvasSnapshot = nextSnapshot;
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
     cards: state.cards,
     edges: state.edges,
+    groups: state.groups,
+    canvasSnapshots: state.canvasSnapshots,
     viewport: state.viewport,
     workspaceMode: state.workspaceMode,
     commerceWorkspace: state.commerceWorkspace,
@@ -284,6 +348,72 @@ function save() {
   }));
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   els.saveState.textContent = `已保存 ${new Date().toLocaleTimeString()}`;
+  renderHistoryMenu();
+}
+
+function normalizeCanvasState() {
+  state.cards.forEach(card => normalizeCard(card));
+  state.edges = state.edges.filter(edge => findCard(edge.from) && findCard(edge.to) && edge.from !== edge.to);
+  state.groups = state.groups.map(normalizeCanvasGroup).filter(group => group.memberIds.length);
+}
+
+function restoreCanvasState(snapshot) {
+  state.cards = cloneData(snapshot?.cards || []);
+  state.edges = cloneData(snapshot?.edges || []);
+  state.groups = cloneData(snapshot?.groups || []);
+  normalizeCanvasState();
+  setSelected([]);
+}
+
+function undoCanvas() {
+  if (!state.historyPast.length) return;
+  state.historyFuture.unshift(canvasSnapshot());
+  restoreCanvasState(state.historyPast.pop());
+  state.historyRestoring = true;
+  render();
+  save();
+  state.historyRestoring = false;
+}
+
+function redoCanvas() {
+  if (!state.historyFuture.length) return;
+  state.historyPast.push(canvasSnapshot());
+  restoreCanvasState(state.historyFuture.shift());
+  state.historyRestoring = true;
+  render();
+  save();
+  state.historyRestoring = false;
+}
+
+function createCanvasSnapshot() {
+  state.canvasSnapshots.unshift({
+    id: uid("snapshot"),
+    name: `快照 ${new Date().toLocaleTimeString()}`,
+    createdAt: Date.now(),
+    state: canvasSnapshot()
+  });
+  state.canvasSnapshots = state.canvasSnapshots.slice(0, 12);
+  renderHistoryMenu();
+  save();
+}
+
+function restoreNamedCanvasSnapshot(id) {
+  const snapshot = state.canvasSnapshots.find(item => item.id === id);
+  if (!snapshot) return;
+  restoreCanvasState(snapshot.state);
+  state.historyRestoring = true;
+  render();
+  save();
+  state.historyRestoring = false;
+}
+
+function renderHistoryMenu() {
+  if (!els.canvasSnapshotList) return;
+  els.canvasSnapshotList.innerHTML = state.canvasSnapshots.map(snapshot => `<button type="button" data-snapshot-id="${escapeAttr(snapshot.id)}"><span>${escapeHtml(snapshot.name)}</span><small>恢复</small></button>`).join("");
+  const undo = document.getElementById("undoCanvas");
+  const redo = document.getElementById("redoCanvas");
+  if (undo) undo.disabled = !state.historyPast.length;
+  if (redo) redo.disabled = !state.historyFuture.length;
 }
 
 function normalizeCommerceRef(ref) {
@@ -565,6 +695,184 @@ function renderSelectionBox() {
   const rect = normalizedSelectionRect(state.selectionBox);
   if (!rect) return "";
   return `<div class="selection-box" style="left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px"></div>`;
+}
+
+function groupBounds(group) {
+  const cards = (group?.memberIds || []).map(findCard).filter(Boolean);
+  if (!cards.length) return null;
+  const padding = 24;
+  const left = Math.min(...cards.map(card => card.x)) - padding;
+  const top = Math.min(...cards.map(card => card.y)) - padding - 24;
+  const right = Math.max(...cards.map(card => card.x + card.w)) + padding;
+  const bottom = Math.max(...cards.map(card => card.y + (card.layoutH || card.h))) + padding;
+  return { x: left, y: top, w: right - left, h: bottom - top };
+}
+
+function renderCanvasGroups() {
+  return state.groups.map(group => {
+    const bounds = groupBounds(group);
+    if (!bounds) return "";
+    return `<section class="canvas-group" data-group-id="${escapeAttr(group.id)}" style="left:${bounds.x}px;top:${bounds.y}px;width:${bounds.w}px;height:${bounds.h}px;border-color:${escapeAttr(group.color)}66;background:${escapeAttr(group.color)}0b">
+      <div class="canvas-group-title"><input type="text" value="${escapeAttr(group.name)}" data-group-title="${escapeAttr(group.id)}" aria-label="分组名称"><button type="button" data-group-action="ungroup" data-group-id="${escapeAttr(group.id)}" title="取消分组">×</button></div>
+      <span class="canvas-group-label">GROUP</span>
+    </section>`;
+  }).join("");
+}
+
+function groupSelectedCards() {
+  const ids = selectedIds();
+  if (!ids.length) return;
+  state.groups = state.groups.filter(group => !group.memberIds.some(id => ids.includes(id)));
+  state.groups.push({ id: uid("group"), name: `分组 ${state.groups.length + 1}`, memberIds: ids, color: "#e7ff25", createdAt: Date.now() });
+  render();
+  save();
+}
+
+function ungroupById(id) {
+  const before = state.groups.length;
+  state.groups = state.groups.filter(group => group.id !== id);
+  if (state.groups.length !== before) {
+    render();
+    save();
+  }
+}
+
+function ungroupSelection() {
+  const ids = new Set(selectedIds());
+  const before = state.groups.length;
+  state.groups = state.groups.filter(group => !group.memberIds.some(id => ids.has(id)));
+  if (state.groups.length !== before) {
+    render();
+    save();
+  }
+}
+
+function autoLayoutCards(mode = "selected") {
+  const selected = new Set(selectedIds());
+  const cards = mode === "all" ? state.cards : state.cards.filter(card => selected.has(card.id));
+  if (!cards.length) return;
+  const ids = new Set(cards.map(card => card.id));
+  const indegree = new Map(cards.map(card => [card.id, 0]));
+  const outgoing = new Map(cards.map(card => [card.id, []]));
+  state.edges.forEach(edge => {
+    if (!ids.has(edge.from) || !ids.has(edge.to)) return;
+    indegree.set(edge.to, indegree.get(edge.to) + 1);
+    outgoing.get(edge.from).push(edge.to);
+  });
+  const levels = new Map();
+  const queue = cards.filter(card => indegree.get(card.id) === 0).map(card => card.id);
+  queue.forEach(id => levels.set(id, 0));
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const from = queue[cursor];
+    outgoing.get(from).forEach(to => {
+      levels.set(to, Math.max(levels.get(to) || 0, (levels.get(from) || 0) + 1));
+      indegree.set(to, indegree.get(to) - 1);
+      if (indegree.get(to) === 0) queue.push(to);
+    });
+  }
+  cards.forEach(card => { if (!levels.has(card.id)) levels.set(card.id, 0); });
+  const columns = new Map();
+  cards.forEach(card => {
+    const level = levels.get(card.id) || 0;
+    if (!columns.has(level)) columns.set(level, []);
+    columns.get(level).push(card);
+  });
+  const minX = Math.min(...cards.map(card => card.x));
+  const minY = Math.min(...cards.map(card => card.y));
+  [...columns.keys()].sort((a, b) => a - b).forEach(level => {
+    let y = minY;
+    columns.get(level).sort((a, b) => a.y - b.y).forEach(card => {
+      card.x = Math.round(minX + level * 420);
+      card.y = Math.round(y);
+      y += Math.max(card.h, 220) + 70;
+    });
+  });
+  render();
+  save();
+}
+
+function focusCard(id) {
+  const card = findCard(id);
+  if (!card) return;
+  selectSingle(id);
+  const rect = els.viewport.getBoundingClientRect();
+  state.viewport.x = Math.round(rect.width / 2 - (card.x + card.w / 2) * state.viewport.scale);
+  state.viewport.y = Math.round(rect.height / 2 - (card.y + card.h / 2) * state.viewport.scale);
+  render();
+}
+
+function searchCards(query) {
+  const value = String(query || "").trim().toLowerCase();
+  if (!value) return [];
+  return state.cards.filter(card => [card.title, card.prompt, card.type, card.resultUrl ? "资产" : ""].join(" ").toLowerCase().includes(value)).slice(0, 12);
+}
+
+function renderSearchResults(query) {
+  const results = searchCards(query);
+  if (!els.canvasSearchResults) return;
+  if (!String(query || "").trim()) {
+    els.canvasSearchResults.classList.add("hidden");
+    els.canvasSearchResults.innerHTML = "";
+    return;
+  }
+  els.canvasSearchResults.classList.remove("hidden");
+  els.canvasSearchResults.innerHTML = results.length
+    ? results.map(card => `<button type="button" data-search-card-id="${escapeAttr(card.id)}"><strong>${escapeHtml(card.title)}</strong><span>${escapeHtml(card.type)}${card.resultUrl ? " · 资产" : ""}</span></button>`).join("")
+    : `<div class="canvas-layer-empty">没有找到匹配节点</div>`;
+}
+
+function renderMinimap() {
+  const canvas = document.getElementById("minimapCanvas");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#111512";
+  ctx.fillRect(0, 0, width, height);
+  if (!state.cards.length) return;
+  const minX = Math.min(...state.cards.map(card => card.x), -120);
+  const minY = Math.min(...state.cards.map(card => card.y), -80);
+  const maxX = Math.max(...state.cards.map(card => card.x + card.w), 420);
+  const maxY = Math.max(...state.cards.map(card => card.y + card.h), 320);
+  const scale = Math.min((width - 20) / (maxX - minX), (height - 20) / (maxY - minY));
+  const mapX = value => 10 + (value - minX) * scale;
+  const mapY = value => 10 + (value - minY) * scale;
+  ctx.strokeStyle = "rgba(0,209,167,.35)";
+  ctx.lineWidth = 1;
+  state.edges.forEach(edge => {
+    const from = findCard(edge.from);
+    const to = findCard(edge.to);
+    if (!from || !to) return;
+    ctx.beginPath();
+    ctx.moveTo(mapX(from.x + from.w), mapY(from.y + from.h / 2));
+    ctx.lineTo(mapX(to.x), mapY(to.y + to.h / 2));
+    ctx.stroke();
+  });
+  state.cards.forEach(card => {
+    ctx.fillStyle = isCardSelected(card.id) ? "#e7ff25" : card.resultUrl ? "#7bff9c" : "#858c84";
+    ctx.fillRect(mapX(card.x), mapY(card.y), Math.max(4, card.w * scale), Math.max(4, card.h * scale));
+  });
+  const viewportRect = els.viewport.getBoundingClientRect();
+  const worldLeft = -state.viewport.x / state.viewport.scale;
+  const worldTop = -state.viewport.y / state.viewport.scale;
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(mapX(worldLeft), mapY(worldTop), viewportRect.width / state.viewport.scale * scale, viewportRect.height / state.viewport.scale * scale);
+  canvas.__mapBounds = { minX, minY, scale, mapX, mapY };
+}
+
+function minimapFocus(event) {
+  const canvas = document.getElementById("minimapCanvas");
+  const bounds = canvas?.__mapBounds;
+  if (!bounds) return;
+  const rect = canvas.getBoundingClientRect();
+  const worldX = bounds.minX + ((event.clientX - rect.left) * canvas.width / rect.width - 10) / bounds.scale;
+  const worldY = bounds.minY + ((event.clientY - rect.top) * canvas.height / rect.height - 10) / bounds.scale;
+  const viewportRect = els.viewport.getBoundingClientRect();
+  state.viewport.x = Math.round(viewportRect.width / 2 - worldX * state.viewport.scale);
+  state.viewport.y = Math.round(viewportRect.height / 2 - worldY * state.viewport.scale);
+  render();
 }
 
 function createCard(type, options = {}) {
@@ -1275,10 +1583,11 @@ function render() {
         </div>
       </article>`;
   }).join("");
-  els.stage.innerHTML = `${renderSelectionBox()}${cardsHtml}`;
+  els.stage.innerHTML = `${renderSelectionBox()}${renderCanvasGroups()}${cardsHtml}`;
   syncCardLayoutMetrics();
   els.stage.insertAdjacentHTML("afterbegin", renderEdges());
   renderInspector();
+  renderMinimap();
   if (state.workspaceMode === "commerce") renderCommerceWorkspace();
 }
 
@@ -1842,6 +2151,66 @@ function setupTopbar() {
   document.getElementById("importJson").addEventListener("change", importJson);
 }
 
+function setupCanvasManagement() {
+  const toolsMenu = document.getElementById("canvasToolsMenu");
+  const historyMenu = document.getElementById("historyMenu");
+  document.getElementById("openCanvasTools").addEventListener("click", event => {
+    event.stopPropagation();
+    toolsMenu.classList.toggle("hidden");
+    historyMenu.classList.add("hidden");
+  });
+  document.getElementById("openHistory").addEventListener("click", event => {
+    event.stopPropagation();
+    historyMenu.classList.toggle("hidden");
+    toolsMenu.classList.add("hidden");
+    renderHistoryMenu();
+  });
+  document.getElementById("groupSelection").addEventListener("click", () => { groupSelectedCards(); toolsMenu.classList.add("hidden"); });
+  document.getElementById("ungroupSelection").addEventListener("click", () => { ungroupSelection(); toolsMenu.classList.add("hidden"); });
+  document.getElementById("autoLayout").addEventListener("click", () => { autoLayoutCards("selected"); toolsMenu.classList.add("hidden"); });
+  document.getElementById("autoLayoutAll").addEventListener("click", () => { autoLayoutCards("all"); toolsMenu.classList.add("hidden"); });
+  document.getElementById("toggleMinimap").addEventListener("click", () => {
+    document.getElementById("minimap").classList.toggle("hidden");
+    renderMinimap();
+    toolsMenu.classList.add("hidden");
+  });
+  document.getElementById("undoCanvas").addEventListener("click", undoCanvas);
+  document.getElementById("redoCanvas").addEventListener("click", redoCanvas);
+  document.getElementById("createCanvasSnapshot").addEventListener("click", createCanvasSnapshot);
+  els.canvasSnapshotList.addEventListener("click", event => {
+    const button = event.target.closest("[data-snapshot-id]");
+    if (button) restoreNamedCanvasSnapshot(button.dataset.snapshotId);
+  });
+  els.canvasSearch.addEventListener("input", event => renderSearchResults(event.target.value));
+  els.canvasSearchResults.addEventListener("click", event => {
+    const button = event.target.closest("[data-search-card-id]");
+    if (!button) return;
+    focusCard(button.dataset.searchCardId);
+    els.canvasSearchResults.classList.add("hidden");
+  });
+  document.getElementById("minimapCanvas").addEventListener("pointerdown", minimapFocus);
+  els.stage.addEventListener("pointerdown", event => {
+    if (event.target.closest(".canvas-group-title")) event.stopPropagation();
+  });
+  els.stage.addEventListener("click", event => {
+    const action = event.target.closest("[data-group-action]");
+    if (action?.dataset.groupAction === "ungroup") ungroupById(action.dataset.groupId);
+  });
+  els.stage.addEventListener("input", event => {
+    const input = event.target.closest("[data-group-title]");
+    if (!input) return;
+    const group = state.groups.find(item => item.id === input.dataset.groupTitle);
+    if (!group) return;
+    group.name = input.value.slice(0, 32);
+    scheduleSave();
+  });
+  window.addEventListener("click", event => {
+    if (!event.target.closest(".canvas-tools-menu") && !event.target.closest("#openCanvasTools")) toolsMenu.classList.add("hidden");
+    if (!event.target.closest(".history-menu") && !event.target.closest("#openHistory")) historyMenu.classList.add("hidden");
+  });
+  renderHistoryMenu();
+}
+
 function fitView() {
   if (!state.cards.length) {
     state.viewport = { x: 300, y: 160, scale: 1 };
@@ -1863,7 +2232,7 @@ function fitView() {
 }
 
 function exportJson() {
-  const blob = new Blob([JSON.stringify({ cards: state.cards, edges: state.edges, viewport: state.viewport, settings, commerceWorkspace: state.commerceWorkspace, productVideoWorkspace: state.productVideoWorkspace }, null, 2)], { type: "application/json" });
+  const blob = new Blob([JSON.stringify({ cards: state.cards, edges: state.edges, groups: state.groups, canvasSnapshots: state.canvasSnapshots, viewport: state.viewport, settings, commerceWorkspace: state.commerceWorkspace, productVideoWorkspace: state.productVideoWorkspace }, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -1881,12 +2250,14 @@ function importJson(event) {
       const data = JSON.parse(reader.result);
       if (Array.isArray(data.cards)) state.cards = data.cards;
       if (Array.isArray(data.edges)) state.edges = data.edges;
+      if (Array.isArray(data.groups)) state.groups = data.groups;
+      if (Array.isArray(data.canvasSnapshots)) state.canvasSnapshots = normalizeCanvasSnapshots(data.canvasSnapshots);
       if (data.viewport) state.viewport = data.viewport;
       if (data.settings) Object.assign(settings, data.settings);
       if (data.commerceWorkspace) state.commerceWorkspace = normalizeCommerceWorkspace(data.commerceWorkspace);
       if (data.productVideoWorkspace) state.productVideoWorkspace = normalizeProductVideoWorkspace(data.productVideoWorkspace);
       migrateLegacyCommerceNodes();
-      state.cards.forEach(card => normalizeCard(card));
+      normalizeCanvasState();
       setSelected([]);
       syncSettingsForm();
       render();
@@ -2868,6 +3239,22 @@ function setupKeyboardShortcuts() {
       pasteNodes();
       return;
     }
+    if (event.ctrlKey && event.key.toLowerCase() === "z") {
+      event.preventDefault();
+      if (event.shiftKey) redoCanvas();
+      else undoCanvas();
+      return;
+    }
+    if (event.ctrlKey && event.key.toLowerCase() === "y") {
+      event.preventDefault();
+      redoCanvas();
+      return;
+    }
+    if (event.ctrlKey && event.key.toLowerCase() === "g") {
+      event.preventDefault();
+      groupSelectedCards();
+      return;
+    }
     if (event.ctrlKey && (event.key === "+" || event.key === "=")) {
       event.preventDefault();
       state.viewport.scale = Math.min(2.5, state.viewport.scale * 1.15);
@@ -2895,6 +3282,7 @@ function boot() {
   setupContextMenu();
   setupConnectionCreateMenu();
   setupTopbar();
+  setupCanvasManagement();
   setupUtilityControls();
   setupKeyboardShortcuts();
   setupSettings();
