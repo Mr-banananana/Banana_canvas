@@ -184,6 +184,19 @@ $checks = @(
     Pass = $styles -notmatch '\.top-actions\s*\{[^}]*overflow-y:\s*hidden'
   },
   @{
+    Name = 'node dragging calculates a browser-edge auto-pan velocity'
+    Pass = $app -match 'function dragEdgeVelocity\(' -and
+      $app -match 'DRAG_EDGE_MARGIN' -and
+      $app -match 'DRAG_EDGE_MAX_SPEED'
+  },
+  @{
+    Name = 'node dragging keeps moving while the pointer stays at the edge'
+    Pass = $app -match 'function continueDragAutoPan\(' -and
+      $app -match 'requestAnimationFrame\(continueDragAutoPan\)' -and
+      $app -match 'state\.viewport\.x\s*\+=' -and
+      $app -match 'updateDraggedCards\(drag\.lastClientX, drag\.lastClientY\)'
+  },
+  @{
     Name = 'commerce is a dedicated left-toolbar workspace entry'
     Pass = $html -match 'id="commerceTool"' -and $html -match 'data-tool="commerce"' -and $html -notmatch 'data-create="commerce"'
   },
@@ -448,7 +461,7 @@ $checks = @(
   },
   @{
     Name = 'prompt fixes are cache-busted in the served page'
-    Pass = $html -match 'app\.js\?v=canvas-controls-4' -and $html -match 'styles\.css\?v=canvas-controls-4'
+    Pass = $html -match 'app\.js\?v=canvas-controls-5' -and $html -match 'styles\.css\?v=canvas-controls-5'
   },
   @{
     Name = 'server exposes a deployment health endpoint'

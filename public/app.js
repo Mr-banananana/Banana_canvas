@@ -2,6 +2,8 @@ const STORAGE_KEY = "local-ai-canvas-state-v2";
 const SETTINGS_KEY = "local-ai-canvas-settings-v1";
 const API_KEY_SESSION = "local-ai-canvas-api-key";
 const SVG_OFFSET = 5000;
+const DRAG_EDGE_MARGIN = 84;
+const DRAG_EDGE_MAX_SPEED = 560;
 
 const els = {
   stage: document.getElementById("canvasStage"),
@@ -2029,6 +2031,64 @@ function handleUpload(event) {
   event.target.value = "";
 }
 
+function dragEdgeVelocity(clientX, clientY, rect) {
+  const edgeSpeed = distance => Math.min(1, Math.max(0, (DRAG_EDGE_MARGIN - distance) / DRAG_EDGE_MARGIN)) * DRAG_EDGE_MAX_SPEED;
+  let x = 0;
+  let y = 0;
+  if (clientX < rect.left + DRAG_EDGE_MARGIN) x = edgeSpeed(clientX - rect.left);
+  else if (clientX > rect.right - DRAG_EDGE_MARGIN) x = -edgeSpeed(rect.right - clientX);
+  if (clientY < rect.top + DRAG_EDGE_MARGIN) y = edgeSpeed(clientY - rect.top);
+  else if (clientY > rect.bottom - DRAG_EDGE_MARGIN) y = -edgeSpeed(rect.bottom - clientY);
+  return { x, y };
+}
+
+function updateDraggedCards(clientX, clientY) {
+  const drag = state.drag;
+  const card = drag && findCard(drag.id);
+  if (!drag || !card) return;
+  const point = clientToWorld(clientX, clientY);
+  if (drag.origins?.length) {
+    const deltaX = point.x - drag.start.x;
+    const deltaY = point.y - drag.start.y;
+    drag.origins.forEach(origin => {
+      const item = findCard(origin.id);
+      if (!item) return;
+      item.x = Math.round(origin.x + deltaX);
+      item.y = Math.round(origin.y + deltaY);
+    });
+  } else {
+    card.x = Math.round(point.x - drag.dx);
+    card.y = Math.round(point.y - drag.dy);
+  }
+}
+
+function continueDragAutoPan(timestamp) {
+  const drag = state.drag;
+  if (!drag) return;
+  const elapsed = Math.min(50, Math.max(0, timestamp - (drag.lastAutoPanAt || timestamp)));
+  drag.lastAutoPanAt = timestamp;
+  const rect = els.viewport.getBoundingClientRect();
+  const velocity = dragEdgeVelocity(drag.lastClientX, drag.lastClientY, rect);
+  if (velocity.x || velocity.y) {
+    state.viewport.x += velocity.x * elapsed / 1000;
+    state.viewport.y += velocity.y * elapsed / 1000;
+    updateDraggedCards(drag.lastClientX, drag.lastClientY);
+    render();
+  }
+  drag.autoPanFrame = requestAnimationFrame(continueDragAutoPan);
+}
+
+function startDragAutoPan() {
+  if (!state.drag || state.drag.autoPanFrame) return;
+  state.drag.lastAutoPanAt = performance.now();
+  state.drag.autoPanFrame = requestAnimationFrame(continueDragAutoPan);
+}
+
+function stopDragAutoPan() {
+  if (state.drag?.autoPanFrame) cancelAnimationFrame(state.drag.autoPanFrame);
+  if (state.drag) state.drag.autoPanFrame = 0;
+}
+
 function setupCanvasEvents() {
   els.viewport.addEventListener("wheel", event => {
     const isZoomGesture = event.ctrlKey;
@@ -2093,6 +2153,8 @@ function setupCanvasEvents() {
         dx: start.x - card.x,
         dy: start.y - card.y,
         start,
+        lastClientX: event.clientX,
+        lastClientY: event.clientY,
         ids: dragIds,
         origins: dragIds.map(id => {
           const item = findCard(id);
@@ -2100,6 +2162,7 @@ function setupCanvasEvents() {
         })
       };
       cardEl.setPointerCapture(event.pointerId);
+      startDragAutoPan();
       render();
       return;
     }
@@ -2126,22 +2189,9 @@ function setupCanvasEvents() {
       return;
     }
     if (state.drag) {
-      const card = findCard(state.drag.id);
-      if (!card) return;
-      const point = clientToWorld(event.clientX, event.clientY);
-      if (state.drag.origins?.length) {
-        const deltaX = point.x - state.drag.start.x;
-        const deltaY = point.y - state.drag.start.y;
-        state.drag.origins.forEach(origin => {
-          const item = findCard(origin.id);
-          if (!item) return;
-          item.x = Math.round(origin.x + deltaX);
-          item.y = Math.round(origin.y + deltaY);
-        });
-      } else {
-        card.x = Math.round(point.x - state.drag.dx);
-        card.y = Math.round(point.y - state.drag.dy);
-      }
+      state.drag.lastClientX = event.clientX;
+      state.drag.lastClientY = event.clientY;
+      updateDraggedCards(event.clientX, event.clientY);
       render();
       return;
     }
@@ -2212,6 +2262,7 @@ function setupCanvasEvents() {
       return;
     }
     if (state.drag || state.pan) save();
+    stopDragAutoPan();
     state.drag = null;
     state.pan = null;
   });
