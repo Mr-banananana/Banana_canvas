@@ -2492,6 +2492,25 @@ body {
   filter: drop-shadow(0 0 10px rgba(247, 223, 74, 0.36));
 }
 
+.connection-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 18px;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.connection-path:not(.dim) {
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.connection-path.selected {
+  stroke: #fff36b;
+  stroke-width: 5px;
+  filter: drop-shadow(0 0 12px rgba(255, 243, 107, 0.78));
+}
+
 .card {
   border: 1px solid rgba(244, 235, 168, 0.1);
   border-radius: 18px;
@@ -2556,6 +2575,73 @@ body {
   background: var(--banana);
   box-shadow: 0 0 0 5px rgba(247, 223, 74, 0.16), 0 0 22px rgba(247, 223, 74, 0.28);
 }
+
+.port {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.port::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 17px;
+  height: 17px;
+  border: 2px solid rgba(244, 235, 168, 0.24);
+  border-radius: 50%;
+  background: #10130f;
+  box-shadow: 0 0 0 4px rgba(3, 5, 3, 0.84);
+  transform: translate(-50%, -50%);
+  transition: transform 140ms ease, border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
+  pointer-events: none;
+}
+
+.port.input { left: -18px; }
+.port.output { right: -18px; }
+
+.port:hover,
+.port.connecting {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  transform: translateY(-50%);
+}
+
+.port:hover::before,
+.port.connecting::before {
+  border-color: var(--banana);
+  background: var(--banana);
+  box-shadow: 0 0 0 5px rgba(247, 223, 74, 0.16), 0 0 22px rgba(247, 223, 74, 0.28);
+  transform: translate(-50%, -50%) scale(1.16);
+}
+
+.card.connection-valid {
+  border-color: var(--success) !important;
+  box-shadow: 0 0 0 3px rgba(103, 242, 155, 0.24), 0 0 30px rgba(103, 242, 155, 0.24);
+}
+
+.card.connection-invalid {
+  border-color: var(--danger) !important;
+  box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.24), 0 0 30px rgba(255, 107, 107, 0.22);
+}
+
+.port.connection-valid::before {
+  border-color: #d7ffe3;
+  background: var(--success);
+  box-shadow: 0 0 0 6px rgba(103, 242, 155, 0.18), 0 0 24px rgba(103, 242, 155, 0.55);
+}
+
+.port.connection-invalid::before {
+  border-color: #ffe1e1;
+  background: var(--danger);
+  box-shadow: 0 0 0 6px rgba(255, 107, 107, 0.18), 0 0 24px rgba(255, 107, 107, 0.5);
+}
+
+.minimap canvas.is-navigating { cursor: grabbing; }
 
 .node-control-dock {
   border: 1px solid rgba(247, 223, 74, 0.15);

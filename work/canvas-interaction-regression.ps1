@@ -32,9 +32,18 @@ $lassoSelectionBlock = [regex]::Match($app, 'function lassoSelectionIds\(box, re
 $updateDraggedCardsBlock = [regex]::Match($app, 'function updateDraggedCards\(clientX, clientY, altKey = false\) \{[\s\S]*?\n\}').Value
 $flushInteractionBlock = [regex]::Match($app, 'function flushInteractionFrame\(flags\) \{[\s\S]*?\n\}').Value
 $connectionPointerBlock = [regex]::Match($app, 'const output = event\.target\.closest\("\.port\.output"\);[\s\S]*?scheduleInteractionFrame\(\{ edges: true \}\);').Value
+$edgePointerBlock = [regex]::Match($app, 'const edgePathNode = event\.target\.closest\("\[data-edge-id\]"\);[\s\S]*?return;').Value
+$connectionMoveBlock = [regex]::Match($app, 'if \(state\.connecting\) \{[\s\S]*?setConnectionTarget\([\s\S]*?scheduleInteractionFrame\(\{ edges: true \}\);[\s\S]*?return;').Value
+$connectionUpBlock = [regex]::Match($app, 'if \(state\.connecting\) \{[\s\S]*?showConnectionCreateMenu\(from, event\.clientX, event\.clientY\);[\s\S]*?return;').Value
+$deleteKeyBlock = [regex]::Match($app, 'if \(event\.key === "Delete" \|\| event\.key === "Backspace"\) \{[\s\S]*?return;[\s\S]*?\n\s*\}').Value
+$deleteEdgeBlock = [regex]::Match($app, 'function deleteSelectedEdge\(\) \{[\s\S]*?\n\}').Value
 $stagePointerGuardBlock = [regex]::Match($app, 'els\.stage\.addEventListener\("pointerdown", event => \{[\s\S]*?\n\s*\}\);').Value
 $connectionMenuPointerBlock = [regex]::Match($app, 'els\.connectionCreateMenu\.addEventListener\("pointerdown", event =>[\s\S]*?\);').Value
-$minimapFocusBlock = [regex]::Match($app, 'function minimapFocus\(event\) \{[\s\S]*?\n\}').Value
+$minimapClientBlock = [regex]::Match($app, 'function minimapClientToWorld\(clientX, clientY\) \{[\s\S]*?\n\}').Value
+$minimapPointBlock = [regex]::Match($app, 'function minimapPointToViewport\(clientX, clientY\) \{[\s\S]*?\n\}').Value
+$beginMinimapBlock = [regex]::Match($app, 'function beginMinimapPan\(event\) \{[\s\S]*?\n\}').Value
+$updateMinimapBlock = [regex]::Match($app, 'function updateMinimapPan\(event\) \{[\s\S]*?\n\}').Value
+$endMinimapBlock = [regex]::Match($app, 'function endMinimapPan\(event\) \{[\s\S]*?\n\}').Value
 
 $checks = @(
   @{
@@ -106,7 +115,7 @@ $checks = @(
     Name = 'middle pan propagates through canvas controls and overlays'
     Pass = $stagePointerGuardBlock -match 'event\.button === 0[\s\S]*?stopPropagation\(\)' -and
       $connectionMenuPointerBlock -match 'event\.button === 0[\s\S]*?stopPropagation\(\)' -and
-      $minimapFocusBlock -match 'if \(event\.button !== 0\) return;[\s\S]*?event\.stopPropagation\(\)'
+      $beginMinimapBlock -match 'if \(event\.button !== 0\) return;[\s\S]*?event\.stopPropagation\(\)'
   },
   @{
     Name = 'drag frames reuse indexed cards and schedule guide DOM updates'
@@ -161,6 +170,80 @@ $checks = @(
   @{
     Name = 'completed edges use one structural render for connected UI'
     Pass = $app -match 'if \(input && input\.dataset\.id !== from\) \{[\s\S]*?addEdge\(from, input\.dataset\.id\);[\s\S]*?state\.connecting = null;[\s\S]*?render\(\);[\s\S]*?save\(\);'
+  },
+  @{
+    Name = 'connections expose visible and expanded selectable paths'
+    Pass = $app -match 'selectedEdgeId:\s*null' -and
+      $app -match 'class="connection-hit" data-edge-id=' -and
+      $app -match 'class="connection-path[^\"]*" data-edge-id=' -and
+      $edgePointerBlock -match 'selectEdge\(edgePathNode\.dataset\.edgeId\)' -and
+      $styles -match '\.connection-hit\s*\{[\s\S]*?stroke-width:\s*(1[4-9]|2[0-4])' -and
+      $styles -match '\.connection-path\.selected\s*\{'
+  },
+  @{
+    Name = 'delete removes a selected edge before selected cards'
+    Pass = $app -match 'function deleteSelectedEdge\(\)' -and
+      $app -match 'state\.edges = state\.edges\.filter\(edge => edge\.id !== state\.selectedEdgeId\)' -and
+      $deleteKeyBlock -match 'if \(deleteSelectedEdge\(\)\) return;' -and
+      $deleteKeyBlock -match 'deleteSelectedNode\(\);' -and
+      $deleteEdgeBlock -match 'scheduleInteractionFrame\(\{ edges: true, minimap: true \}\);' -and
+      $deleteEdgeBlock -notmatch 'render\(\)'
+  },
+  @{
+    Name = 'card selection predictably clears edge selection'
+    Pass = $app -match 'function setSelected\(ids\) \{[\s\S]*?state\.selectedEdgeId = null;' -and
+      $app -match 'function selectEdge\(id\) \{[\s\S]*?setSelected\(\[\]\);[\s\S]*?state\.selectedEdgeId = id;'
+  },
+  @{
+    Name = 'connection drag marks valid and invalid input targets'
+    Pass = $app -match 'function setConnectionTarget\(cardId, validity\)' -and
+      $connectionMoveBlock -match 'document\.elementFromPoint\(event\.clientX, event\.clientY\)' -and
+      $connectionMoveBlock -match 'connectionTargetValidity\(' -and
+      $styles -match '\.card\.connection-valid' -and
+      $styles -match '\.card\.connection-invalid'
+  },
+  @{
+    Name = 'self and duplicate connection drops are rejected without opening create menu'
+    Pass = $app -match 'function connectionTargetValidity\(from, to\)' -and
+      $app -match 'if \(!to \|\| from === to\) return "invalid";' -and
+      $app -match 'state\.edges\.some\(edge => edge\.from === from && edge\.to === to\)' -and
+      $connectionUpBlock -match 'if \(validity === "invalid"\)[\s\S]*?return;' -and
+      $connectionUpBlock.IndexOf('if (validity === "invalid")') -lt $connectionUpBlock.IndexOf('showConnectionCreateMenu(from, event.clientX, event.clientY)')
+  },
+  @{
+    Name = 'ports use expanded stable hit areas around fixed visual dots'
+    Pass = $styles -match '\.port\s*\{[\s\S]*?width:\s*(3[2-9]|4[0-4])px;[\s\S]*?height:\s*(3[2-9]|4[0-4])px;' -and
+      $styles -match '\.port::before\s*\{[\s\S]*?width:\s*17px;[\s\S]*?height:\s*17px;' -and
+      $styles -match '\.port:hover::before'
+  },
+  @{
+    Name = 'minimap viewport rectangle uses actual viewport and scale'
+    Pass = $minimapBlock -match 'els\.viewport\.getBoundingClientRect\(\)' -and
+      $minimapBlock -match 'worldLeft\s*=\s*-state\.viewport\.x\s*/\s*state\.viewport\.scale' -and
+      $minimapBlock -match 'viewportRect\.width\s*/\s*state\.viewport\.scale' -and
+      $minimapBlock -match 'state\.minimapPan\?\.mapBounds' -and
+      $minimapBlock -match '__mapBounds\s*=\s*\{[\s\S]*?viewportCanvasRect'
+  },
+  @{
+    Name = 'minimap click and drag navigation use pointer capture and incremental frames'
+    Pass = $minimapClientBlock -match 'canvas\.width / rect\.width' -and
+      $minimapClientBlock -match 'state\.minimapPan\?\.mapBounds \|\| canvas\?\.__mapBounds' -and
+      $minimapPointBlock -match 'viewportRect\.width / 2' -and
+      $beginMinimapBlock -match 'interactionController\.begin\("minimap-panning"' -and
+      $beginMinimapBlock -match 'setPointerCapture\(event\.pointerId\)' -and
+      $beginMinimapBlock -match 'mapBounds:' -and
+      $updateMinimapBlock -match 'minimapPointToViewport\(event\.clientX, event\.clientY\)' -and
+      $updateMinimapBlock -match 'scheduleInteractionFrame\(\{ viewport: true, dock: true, minimap: true \}\);' -and
+      $updateMinimapBlock -notmatch 'render\(\)' -and
+      $endMinimapBlock -match 'updateMinimapPan\(event\);[\s\S]*?interactionController\.end\(event\.pointerId\)'
+  },
+  @{
+    Name = 'minimap respects pointer ownership and lets middle pan propagate'
+    Pass = $beginMinimapBlock -match 'if \(event\.button !== 0\) return;' -and
+      $beginMinimapBlock -match 'event\.stopPropagation\(\)' -and
+      $beginMinimapBlock -match 'pointerId:\s*event\.pointerId' -and
+      $app -match 'if \(state\.minimapPan\) \{[\s\S]*?updateMinimapPan\(event\);[\s\S]*?return;' -and
+      $app -match 'if \(state\.minimapPan\) \{[\s\S]*?endMinimapPan\(event\);[\s\S]*?return;'
   },
   @{
     Name = 'interaction hot paths cache selected cards edges and groups'

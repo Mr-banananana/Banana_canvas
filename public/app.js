@@ -102,10 +102,12 @@ const state = {
   canvasSnapshots: [],
   selectedId: null,
   selectedIds: [],
+  selectedEdgeId: null,
   viewport: { x: 300, y: 160, scale: 1 },
   pendingDrag: null,
   drag: null,
   pan: null,
+  minimapPan: null,
   selectionBox: null,
   alignmentGuides: [],
   connecting: null,
@@ -156,6 +158,7 @@ let saveTimer = null;
 let lastCanvasSnapshot = null;
 const cardNodes = new Map();
 const edgeNodes = new Map();
+const edgeHitNodes = new Map();
 const interactionController = CanvasEngine.createInteractionController();
 let pendingInteractionFlags = {};
 let renderedInspectorSelectionId = null;
@@ -832,6 +835,7 @@ function setSelected(ids) {
   const unique = [...new Set((ids || []).filter(id => findCard(id)))];
   state.selectedIds = unique;
   state.selectedId = unique[0] || null;
+  state.selectedEdgeId = null;
 }
 
 function selectSingle(id) {
@@ -841,6 +845,12 @@ function selectSingle(id) {
 function toggleSelected(id) {
   const ids = selectedIds();
   setSelected(ids.includes(id) ? ids.filter(selectedId => selectedId !== id) : [...ids, id]);
+}
+
+function selectEdge(id) {
+  if (!state.edges.some(edge => edge.id === id)) return;
+  setSelected([]);
+  state.selectedEdgeId = id;
 }
 
 function isCardSelected(id) {
@@ -900,8 +910,12 @@ function cacheCardNodes() {
 
 function cacheEdgeNodes() {
   edgeNodes.clear();
-  els.stage.querySelectorAll("path[data-edge-id]").forEach(node => {
+  edgeHitNodes.clear();
+  els.stage.querySelectorAll(".connection-path[data-edge-id]").forEach(node => {
     edgeNodes.set(node.dataset.edgeId, node);
+  });
+  els.stage.querySelectorAll(".connection-hit[data-edge-id]").forEach(node => {
+    edgeHitNodes.set(node.dataset.edgeId, node);
   });
 }
 
@@ -921,6 +935,8 @@ function updateEdgeGeometry() {
     if (!edgeIds.has(id)) {
       node.remove();
       edgeNodes.delete(id);
+      edgeHitNodes.get(id)?.remove();
+      edgeHitNodes.delete(id);
     }
   });
   state.edges.forEach(edge => {
@@ -928,6 +944,14 @@ function updateEdgeGeometry() {
     const to = cardsById.get(edge.to);
     if (!from || !to) return;
     let node = edgeNodes.get(edge.id);
+    let hitNode = edgeHitNodes.get(edge.id);
+    if (!hitNode) {
+      hitNode = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      hitNode.classList.add("connection-hit");
+      hitNode.dataset.edgeId = edge.id;
+      svg.append(hitNode);
+      edgeHitNodes.set(edge.id, hitNode);
+    }
     if (!node) {
       node = document.createElementNS("http://www.w3.org/2000/svg", "path");
       node.classList.add("connection-path");
@@ -935,7 +959,10 @@ function updateEdgeGeometry() {
       svg.append(node);
       edgeNodes.set(edge.id, node);
     }
-    node.setAttribute("d", edgePath(portPoint(from, "out"), portPoint(to, "in")));
+    const path = edgePath(portPoint(from, "out"), portPoint(to, "in"));
+    hitNode.setAttribute("d", path);
+    node.setAttribute("d", path);
+    node.classList.toggle("selected", state.selectedEdgeId === edge.id);
   });
   let draft = svg.querySelector("path[data-connection-draft]");
   if (!state.connecting) {
@@ -976,6 +1003,9 @@ function updateSelectionGeometry() {
   const selectedIdSet = new Set(state.selectedIds);
   cardNodes.forEach((cardNode, id) => {
     cardNode.classList.toggle("selected", selectedIdSet.has(id));
+  });
+  edgeNodes.forEach((edgeNode, id) => {
+    edgeNode.classList.toggle("selected", state.selectedEdgeId === id);
   });
   const cardsById = new Map(state.cards.map(card => [card.id, card]));
   const groupById = new Map(state.groups.map(group => [group.id, group]));
@@ -1179,15 +1209,20 @@ function renderMinimap() {
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#111512";
   ctx.fillRect(0, 0, width, height);
-  if (!state.cards.length) return;
   const cardsById = new Map(state.cards.map(card => [card.id, card]));
   const selectedIdSet = new Set(state.selectedIds);
   const cardHeight = card => card.layoutH ?? card.h;
-  const minX = Math.min(...state.cards.map(card => card.x), -120);
-  const minY = Math.min(...state.cards.map(card => card.y), -80);
-  const maxX = Math.max(...state.cards.map(card => card.x + card.w), 420);
-  const maxY = Math.max(...state.cards.map(card => card.y + cardHeight(card)), 320);
-  const scale = Math.min((width - 20) / (maxX - minX), (height - 20) / (maxY - minY));
+  const viewportRect = els.viewport.getBoundingClientRect();
+  const worldLeft = -state.viewport.x / state.viewport.scale;
+  const worldTop = -state.viewport.y / state.viewport.scale;
+  const worldWidth = viewportRect.width / state.viewport.scale;
+  const worldHeight = viewportRect.height / state.viewport.scale;
+  const activeMapBounds = state.minimapPan?.mapBounds;
+  const minX = activeMapBounds?.minX ?? Math.min(...state.cards.map(card => card.x), worldLeft, -120);
+  const minY = activeMapBounds?.minY ?? Math.min(...state.cards.map(card => card.y), worldTop, -80);
+  const maxX = activeMapBounds?.maxX ?? Math.max(...state.cards.map(card => card.x + card.w), worldLeft + worldWidth, 420);
+  const maxY = activeMapBounds?.maxY ?? Math.max(...state.cards.map(card => card.y + cardHeight(card)), worldTop + worldHeight, 320);
+  const scale = activeMapBounds?.scale ?? Math.min((width - 20) / (maxX - minX), (height - 20) / (maxY - minY));
   const mapX = value => 10 + (value - minX) * scale;
   const mapY = value => 10 + (value - minY) * scale;
   ctx.strokeStyle = "rgba(0,209,167,.35)";
@@ -1205,28 +1240,90 @@ function renderMinimap() {
     ctx.fillStyle = selectedIdSet.has(card.id) ? "#e7ff25" : card.resultUrl ? "#7bff9c" : "#858c84";
     ctx.fillRect(mapX(card.x), mapY(card.y), Math.max(4, card.w * scale), Math.max(4, cardHeight(card) * scale));
   });
-  const viewportRect = els.viewport.getBoundingClientRect();
-  const worldLeft = -state.viewport.x / state.viewport.scale;
-  const worldTop = -state.viewport.y / state.viewport.scale;
+  const viewportCanvasRect = {
+    left: mapX(worldLeft),
+    top: mapY(worldTop),
+    width: worldWidth * scale,
+    height: worldHeight * scale
+  };
+  ctx.fillStyle = "rgba(255,255,255,.08)";
+  ctx.fillRect(viewportCanvasRect.left, viewportCanvasRect.top, viewportCanvasRect.width, viewportCanvasRect.height);
   ctx.strokeStyle = "#ffffff";
   ctx.lineWidth = 1.5;
-  ctx.strokeRect(mapX(worldLeft), mapY(worldTop), viewportRect.width / state.viewport.scale * scale, viewportRect.height / state.viewport.scale * scale);
-  canvas.__mapBounds = { minX, minY, scale, mapX, mapY };
+  ctx.strokeRect(viewportCanvasRect.left, viewportCanvasRect.top, viewportCanvasRect.width, viewportCanvasRect.height);
+  canvas.__mapBounds = { minX, minY, maxX, maxY, scale, padding: 10, viewportCanvasRect };
 }
 
-function minimapFocus(event) {
+function minimapClientToWorld(clientX, clientY) {
+  const canvas = document.getElementById("minimapCanvas");
+  const bounds = state.minimapPan?.mapBounds || canvas?.__mapBounds;
+  if (!canvas || !bounds) return null;
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: bounds.minX + ((clientX - rect.left) * canvas.width / rect.width - bounds.padding) / bounds.scale,
+    y: bounds.minY + ((clientY - rect.top) * canvas.height / rect.height - bounds.padding) / bounds.scale
+  };
+}
+
+function minimapPointToViewport(clientX, clientY) {
+  const world = minimapClientToWorld(clientX, clientY);
+  if (!world) return null;
+  const viewportRect = els.viewport.getBoundingClientRect();
+  return {
+    x: Math.round(viewportRect.width / 2 - world.x * state.viewport.scale),
+    y: Math.round(viewportRect.height / 2 - world.y * state.viewport.scale)
+  };
+}
+
+function beginMinimapPan(event) {
   if (event.button !== 0) return;
+  event.preventDefault();
   event.stopPropagation();
   const canvas = document.getElementById("minimapCanvas");
   const bounds = canvas?.__mapBounds;
-  if (!bounds) return;
+  const nextViewport = minimapPointToViewport(event.clientX, event.clientY);
+  if (!canvas || !bounds || !nextViewport) return;
+  if (!interactionController.begin("minimap-panning", { pointerId: event.pointerId })) return;
   const rect = canvas.getBoundingClientRect();
-  const worldX = bounds.minX + ((event.clientX - rect.left) * canvas.width / rect.width - 10) / bounds.scale;
-  const worldY = bounds.minY + ((event.clientY - rect.top) * canvas.height / rect.height - 10) / bounds.scale;
-  const viewportRect = els.viewport.getBoundingClientRect();
-  state.viewport.x = Math.round(viewportRect.width / 2 - worldX * state.viewport.scale);
-  state.viewport.y = Math.round(viewportRect.height / 2 - worldY * state.viewport.scale);
-  render();
+  const canvasX = (event.clientX - rect.left) * canvas.width / rect.width;
+  const canvasY = (event.clientY - rect.top) * canvas.height / rect.height;
+  const view = bounds.viewportCanvasRect;
+  const grabbedViewport = canvasX >= view.left && canvasX <= view.left + view.width && canvasY >= view.top && canvasY <= view.top + view.height;
+  const point = minimapClientToWorld(event.clientX, event.clientY);
+  const center = viewportCenter();
+  state.minimapPan = {
+    pointerId: event.pointerId,
+    offsetX: grabbedViewport ? center.x - point.x : 0,
+    offsetY: grabbedViewport ? center.y - point.y : 0,
+    viewX: state.viewport.x,
+    viewY: state.viewport.y,
+    mapBounds: { ...bounds, viewportCanvasRect: { ...bounds.viewportCanvasRect } }
+  };
+  canvas.classList.add("is-navigating");
+  canvas.setPointerCapture(event.pointerId);
+  updateMinimapPan(event);
+}
+
+function updateMinimapPan(event) {
+  const pan = state.minimapPan;
+  if (!pan || event.pointerId !== pan.pointerId) return;
+  const nextViewport = minimapPointToViewport(event.clientX, event.clientY);
+  if (!nextViewport) return;
+  state.viewport.x = Math.round(nextViewport.x - pan.offsetX * state.viewport.scale);
+  state.viewport.y = Math.round(nextViewport.y - pan.offsetY * state.viewport.scale);
+  scheduleInteractionFrame({ viewport: true, dock: true, minimap: true });
+}
+
+function endMinimapPan(event) {
+  const pan = state.minimapPan;
+  if (!pan || event.pointerId !== pan.pointerId) return;
+  const canvas = document.getElementById("minimapCanvas");
+  updateMinimapPan(event);
+  state.minimapPan = null;
+  interactionController.end(event.pointerId);
+  canvas?.classList.remove("is-navigating");
+  if (canvas?.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+  save();
 }
 
 function createCard(type, options = {}) {
@@ -1892,7 +1989,9 @@ function renderEdges() {
     const from = findCard(edge.from);
     const to = findCard(edge.to);
     if (!from || !to) return "";
-    return `<path class="connection-path" data-edge-id="${escapeAttr(edge.id)}" d="${edgePath(portPoint(from, "out"), portPoint(to, "in"))}"></path>`;
+    const path = edgePath(portPoint(from, "out"), portPoint(to, "in"));
+    const selected = state.selectedEdgeId === edge.id ? " selected" : "";
+    return `<path class="connection-hit" data-edge-id="${escapeAttr(edge.id)}" d="${path}"></path><path class="connection-path${selected}" data-edge-id="${escapeAttr(edge.id)}" d="${path}"></path>`;
   }).join("");
   const draft = state.connecting
     ? `<path class="connection-path dim" data-connection-draft="true" d="${edgePath(portPoint(findCard(state.connecting.from), "out"), state.connecting.to)}"></path>`
@@ -2531,6 +2630,35 @@ function isActiveInteractionPointer(event) {
   return active.mode === "idle" || active.pointerId === event.pointerId;
 }
 
+function connectionTargetValidity(from, to) {
+  if (!to || from === to) return "invalid";
+  if (!findCard(from) || !findCard(to)) return "invalid";
+  if (state.edges.some(edge => edge.from === from && edge.to === to)) return "invalid";
+  return "valid";
+}
+
+function setConnectionTarget(cardId, validity) {
+  const connecting = state.connecting;
+  if (!connecting) return;
+  if (connecting.targetId === cardId && connecting.targetValidity === validity) return;
+  const previousCard = cardNodes.get(connecting.targetId);
+  previousCard?.classList.remove("connection-valid", "connection-invalid");
+  previousCard?.querySelector(".port.input")?.classList.remove("connection-valid", "connection-invalid");
+  connecting.targetId = cardId || null;
+  connecting.targetValidity = validity || null;
+  const targetCard = cardNodes.get(connecting.targetId);
+  if (!targetCard || !connecting.targetValidity) return;
+  targetCard.classList.add(`connection-${connecting.targetValidity}`);
+  targetCard.querySelector(".port.input")?.classList.add(`connection-${connecting.targetValidity}`);
+}
+
+function clearConnectionFeedback() {
+  const connecting = state.connecting;
+  if (!connecting) return;
+  setConnectionTarget(null, null);
+  cardNodes.get(connecting.from)?.querySelector(".port.output")?.classList.remove("connecting");
+}
+
 function cancelCanvasInteraction() {
   if (state.drag?.origins) {
     state.drag.origins.forEach(origin => {
@@ -2544,16 +2672,23 @@ function cancelCanvasInteraction() {
     state.viewport.x = state.pan.viewX;
     state.viewport.y = state.pan.viewY;
   }
+  if (state.minimapPan) {
+    state.viewport.x = state.minimapPan.viewX;
+    state.viewport.y = state.minimapPan.viewY;
+  }
   if (state.selectionBox?.selectionBefore) setSelected(state.selectionBox.selectionBefore);
+  clearConnectionFeedback();
   stopDragAutoPan();
   state.pendingDrag = null;
   state.drag = null;
   state.pan = null;
+  state.minimapPan = null;
   state.selectionBox = null;
   state.connecting = null;
   state.alignmentGuides = [];
   interactionController.cancel();
   els.viewport.classList.remove("is-panning");
+  document.getElementById("minimapCanvas")?.classList.remove("is-navigating");
   scheduleInteractionFrame({ viewport: true, cards: true, edges: true, selection: true, guides: true, dock: true, minimap: true });
 }
 
@@ -2602,12 +2737,22 @@ function setupCanvasEvents() {
     if (event.button !== 0) return;
     hideContextMenu();
     hideConnectionCreateMenu();
+    const edgePathNode = event.target.closest("[data-edge-id]");
+    if (edgePathNode) {
+      event.preventDefault();
+      event.stopPropagation();
+      selectEdge(edgePathNode.dataset.edgeId);
+      scheduleInteractionFrame({ selection: true, edges: true, dock: true, minimap: true });
+      return;
+    }
     const output = event.target.closest(".port.output");
     if (output) {
       event.preventDefault();
       event.stopPropagation();
       if (!interactionController.begin("connecting", { pointerId: event.pointerId, cardId: output.dataset.id })) return;
-      state.connecting = { from: output.dataset.id, to: clientToWorld(event.clientX, event.clientY) };
+      state.selectedEdgeId = null;
+      state.connecting = { from: output.dataset.id, to: clientToWorld(event.clientX, event.clientY), targetId: null, targetValidity: null };
+      output.classList.add("connecting");
       els.viewport.setPointerCapture(event.pointerId);
       scheduleInteractionFrame({ edges: true });
       return;
@@ -2644,8 +2789,16 @@ function setupCanvasEvents() {
 
   window.addEventListener("pointermove", event => {
     if (!isActiveInteractionPointer(event)) return;
+    if (state.minimapPan) {
+      updateMinimapPan(event);
+      return;
+    }
     if (state.connecting) {
       state.connecting.to = clientToWorld(event.clientX, event.clientY);
+      const element = document.elementFromPoint(event.clientX, event.clientY);
+      const input = element && element.closest(".port.input");
+      const targetId = input?.dataset.id || null;
+      setConnectionTarget(targetId, input ? connectionTargetValidity(state.connecting.from, targetId) : null);
       scheduleInteractionFrame({ edges: true });
       return;
     }
@@ -2699,19 +2852,36 @@ function setupCanvasEvents() {
 
   window.addEventListener("pointerup", event => {
     if (!isActiveInteractionPointer(event)) return;
+    if (state.minimapPan) {
+      endMinimapPan(event);
+      return;
+    }
     if (state.connecting) {
       const element = document.elementFromPoint(event.clientX, event.clientY);
       const input = element && element.closest(".port.input");
       const from = state.connecting.from;
-      if (input && input.dataset.id !== from) {
-        addEdge(from, input.dataset.id);
+      const targetId = input?.dataset.id || null;
+      const validity = input ? connectionTargetValidity(from, targetId) : null;
+      if (validity === "valid") {
+        if (input && input.dataset.id !== from) {
+          clearConnectionFeedback();
+          addEdge(from, input.dataset.id);
+          state.connecting = null;
+          interactionController.end(event.pointerId);
+          render();
+          save();
+          return;
+        }
+      }
+      if (validity === "invalid") {
+        clearConnectionFeedback();
         state.connecting = null;
         interactionController.end(event.pointerId);
-        render();
-        save();
+        scheduleInteractionFrame({ edges: true });
         return;
       }
       showConnectionCreateMenu(from, event.clientX, event.clientY);
+      clearConnectionFeedback();
       state.connecting = null;
       interactionController.end(event.pointerId);
       scheduleInteractionFrame({ edges: true });
@@ -2832,7 +3002,7 @@ function setupCanvasManagement() {
     focusCard(button.dataset.searchCardId);
     els.canvasSearchResults.classList.add("hidden");
   });
-  document.getElementById("minimapCanvas").addEventListener("pointerdown", minimapFocus);
+  document.getElementById("minimapCanvas").addEventListener("pointerdown", beginMinimapPan);
   els.stage.addEventListener("pointerdown", event => {
     if (event.button === 0 && event.target.closest(".canvas-group-title")) event.stopPropagation();
   });
@@ -3711,6 +3881,17 @@ function pasteNodes() {
   save();
 }
 
+function deleteSelectedEdge() {
+  if (!state.selectedEdgeId) return false;
+  state.edges = state.edges.filter(edge => edge.id !== state.selectedEdgeId);
+  state.selectedEdgeId = null;
+  const connectedCardIds = new Set(state.edges.flatMap(edge => [edge.from, edge.to]));
+  cardNodes.forEach((cardNode, id) => cardNode.classList.toggle("connected", connectedCardIds.has(id)));
+  scheduleInteractionFrame({ edges: true, minimap: true });
+  save();
+  return true;
+}
+
 function duplicateSelectedNodes() {
   if (!selectedIds().length) return;
   copyNodes("selected");
@@ -3802,6 +3983,7 @@ function setupContextMenu() {
       edges: state.edges.length,
       selectedId: state.selectedId,
       selectedIds: selectedIds(),
+      selectedEdgeId: state.selectedEdgeId,
       menuVisible: !els.contextMenu.classList.contains("hidden")
     })
   };
@@ -3919,6 +4101,7 @@ function setupKeyboardShortcuts() {
     }
     if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault();
+      if (deleteSelectedEdge()) return;
       deleteSelectedNode();
       return;
     }
