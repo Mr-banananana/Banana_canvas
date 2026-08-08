@@ -123,7 +123,7 @@ git commit -m "Add canvas interaction engine"
 - Modify: `work/canvas-interaction-regression.ps1`
 
 **Interfaces:**
-- Consumes: `CanvasEngine.createFrameScheduler(flush)`
+- Consumes: `CanvasEngine.createFrameScheduler(flush)` returning a callable `schedule(payload)` function
 - Produces: `scheduleInteractionFrame(flags)`
 - Produces: `flushInteractionFrame(flags)`
 - Produces: `updateCardTransforms()`, `updateEdgeGeometry()`, `updateSelectionGeometry()`, `updateViewportGeometry()`
@@ -159,10 +159,10 @@ Expected: FAIL on the two new incremental-render checks.
 Create one scheduler and use dirty flags for `viewport`, `cards`, `edges`, `selection`, `dock`, and `minimap`. During drag and pan, update CSS transforms and SVG path `d` attributes directly. Keep `render()` for structural changes only.
 
 ```js
-const interactionFrame = CanvasEngine.createFrameScheduler(flushInteractionFrame);
+const scheduleFrame = CanvasEngine.createFrameScheduler(flushInteractionFrame);
 
 function scheduleInteractionFrame(flags) {
-  interactionFrame.schedule(flags);
+  scheduleFrame(flags);
 }
 
 function updateCardTransforms() {
