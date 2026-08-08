@@ -4,6 +4,8 @@ $html = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\public\index.
 $server = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\server.js')
 $package = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\package.json')
 $readme = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\README.md')
+$fixturePath = Join-Path $PSScriptRoot 'canvas-performance-fixture.js'
+$fixture = if (Test-Path $fixturePath) { Get-Content -Raw -LiteralPath $fixturePath } else { '' }
 $dockerfile = if (Test-Path (Join-Path $PSScriptRoot '..\Dockerfile')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\Dockerfile') } else { '' }
 $render = if (Test-Path (Join-Path $PSScriptRoot '..\render.yaml')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\render.yaml') } else { '' }
 $gitignore = if (Test-Path (Join-Path $PSScriptRoot '..\.gitignore')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\.gitignore') } else { '' }
@@ -76,6 +78,36 @@ $settleHistoryBlock = [regex]::Match($app, 'function settleHistoryInteractionFor
 $undoCanvasBlock = [regex]::Match($app, 'function undoCanvas\(\) \{[\s\S]*?\n\}').Value
 $redoCanvasBlock = [regex]::Match($app, 'function redoCanvas\(\) \{[\s\S]*?\n\}').Value
 $restoreNamedSnapshotBlock = [regex]::Match($app, 'function restoreNamedCanvasSnapshot\(id\) \{[\s\S]*?\n\}').Value
+$performanceFixturePass = $false
+if ($fixture) {
+  $performanceFixtureProbe = @'
+const fs = require("node:fs");
+const vm = require("node:vm");
+const source = fs.readFileSync(process.env.CANVAS_PERFORMANCE_FIXTURE_PATH, "utf8");
+const hiddenContext = { window: {} };
+vm.runInNewContext(source, hiddenContext);
+if ("createCanvasPerformanceFixture" in hiddenContext.window) process.exit(1);
+const context = { window: { __CANVAS_PERFORMANCE_FIXTURE__: true } };
+vm.runInNewContext(source, context);
+const createFixture = context.window.createCanvasPerformanceFixture;
+if (typeof createFixture !== "function") process.exit(1);
+for (const count of [100, 300]) {
+  const result = createFixture(count);
+  if (!result || result.cards.length !== count || result.edges.length !== count - 1) process.exit(1);
+  if (result.cards[0].id !== "perf_0" || result.cards[count - 1].id !== `perf_${count - 1}`) process.exit(1);
+  if (result.cards[20].x !== 0 || result.cards[20].y !== 280) process.exit(1);
+  if (result.cards.some(card => card.resultUrl || card.status !== "idle")) process.exit(1);
+  if (result.edges.some((edge, index) => edge.from !== `perf_${index}` || edge.to !== `perf_${index + 1}`)) process.exit(1);
+}
+if (createFixture(7).cards.length !== 100) process.exit(1);
+'@
+  $env:CANVAS_PERFORMANCE_FIXTURE_PATH = $fixturePath
+  $env:CANVAS_PERFORMANCE_FIXTURE_PROBE = $performanceFixtureProbe
+  & node -e 'eval(process.env.CANVAS_PERFORMANCE_FIXTURE_PROBE)'
+  $performanceFixturePass = $LASTEXITCODE -eq 0
+  Remove-Item Env:\CANVAS_PERFORMANCE_FIXTURE_PATH
+  Remove-Item Env:\CANVAS_PERFORMANCE_FIXTURE_PROBE
+}
 $edgeNormalizationFixturePass = $false
 if ($normalizeEdgesBlock) {
   $edgeNormalizationProbe = @"
@@ -369,6 +401,42 @@ assert(state.historyRestoring === false);
 }
 
 $checks = @(
+  @{
+    Name = 'performance fixture is deterministic gated and connects adjacent cards'
+    Pass = $performanceFixturePass -and
+      $fixture -match '__CANVAS_PERFORMANCE_FIXTURE__' -and
+      $fixture -match 'window\.createCanvasPerformanceFixture\s*=\s*createCanvasPerformanceFixture' -and
+      $fixture -notmatch 'state\.cards|localStorage|dispatchEvent'
+  },
+  @{
+    Name = 'local performance fixture loader is explicit and cache busted'
+    Pass = $html -match 'canvasPerformanceFixture' -and
+      $html -match 'new Set\(\["localhost", "127\.0\.0\.1", "::1"\]\)' -and
+      $html -match 'if \(!localHosts\.has\(window\.location\.hostname\) \|\| !\["100", "300"\]\.includes\(fixtureCount\)\) return;' -and
+      $html -match 'window\.__CANVAS_PERFORMANCE_FIXTURE__ = true' -and
+      $html -match 'document\.createElement\("script"\)' -and
+      $html -match 'canvas-performance-fixture\.js\?v=canvas-interactions-2'
+  },
+  @{
+    Name = 'canvas engine and app scripts are cache busted together'
+    Pass = $html -match 'canvas-engine\.js\?v=canvas-interactions-2' -and
+      $html -match 'app\.js\?v=canvas-interactions-2'
+  },
+  @{
+    Name = 'README documents optimized canvas interactions'
+    Pass = $readme -match '左键.*框选' -and
+      $readme -match 'Shift.*框选' -and
+      $readme -match '4px.*拖动' -and
+      $readme -match '16px.*网格.*对齐参考线' -and
+      $readme -match 'Alt.*绕过吸附' -and
+      $readme -match 'Ctrl\+D' -and
+      $readme -match '点击连线.*Delete' -and
+      $readme -match '小地图.*点击定位.*拖动导航.*方向键' -and
+      $readme -match '中键.*平移画布' -and
+      $readme -match '普通滚轮.*垂直平移.*Ctrl\+滚轮.*缩放' -and
+      $readme -match 'Ctrl\+Z.*撤销.*Ctrl\+Shift\+Z.*重做' -and
+      $readme -match '仅保存在当前浏览器本地.*画布切换器'
+  },
   @{
     Name = 'debounced saves capture one immutable canvas-owned payload at commit time'
     Pass = $lazySaveFixturePass -and
@@ -1197,7 +1265,7 @@ $checks = @(
   },
   @{
     Name = 'prompt fixes are cache-busted in the served page'
-    Pass = $html -match 'app\.js\?v=canvas-controls-9' -and $html -match 'styles\.css\?v=canvas-controls-9'
+    Pass = $html -match 'app\.js\?v=canvas-interactions-2' -and $html -match 'styles\.css\?v=canvas-controls-9'
   },
   @{
     Name = 'server exposes a deployment health endpoint'
