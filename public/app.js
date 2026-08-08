@@ -149,6 +149,8 @@ const state = {
 
 let saveTimer = null;
 let lastCanvasSnapshot = null;
+const cardNodes = new Map();
+let pendingInteractionFlags = {};
 let canvasLibrary = {
   schema: CANVAS_LIBRARY_SCHEMA,
   activeCanvasId: "canvas_default",
@@ -849,6 +851,108 @@ function applyViewport() {
   const { x, y, scale } = state.viewport;
   els.stage.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
   els.zoomLabel.textContent = `${Math.round(scale * 100)}%`;
+}
+
+const interactionFrame = CanvasEngine.createFrameScheduler(flushInteractionFrame);
+
+function scheduleInteractionFrame(flags) {
+  Object.assign(pendingInteractionFlags, flags);
+  interactionFrame(pendingInteractionFlags);
+}
+
+function flushInteractionFrame(flags) {
+  const dirty = flags || pendingInteractionFlags;
+  pendingInteractionFlags = {};
+  if (dirty.viewport) updateViewportGeometry();
+  if (dirty.cards) updateCardTransforms();
+  if (dirty.edges) updateEdgeGeometry();
+  if (dirty.selection) updateSelectionGeometry();
+  if (dirty.dock) {
+    const card = selectedCard();
+    if (card) positionNodeDock(card);
+  }
+  if (dirty.minimap) renderMinimap();
+}
+
+function cacheCardNodes() {
+  cardNodes.clear();
+  els.stage.querySelectorAll(".card[data-id]").forEach(node => {
+    cardNodes.set(node.dataset.id, node);
+  });
+}
+
+function updateCardTransforms() {
+  state.cards.forEach(card => {
+    const node = cardNodes.get(card.id);
+    if (node) node.style.transform = `translate3d(${card.x}px, ${card.y}px, 0)`;
+  });
+}
+
+function updateEdgeGeometry() {
+  const svg = els.stage.querySelector(".connection-svg");
+  if (!svg) return;
+  const edgeIds = new Set(state.edges.map(edge => edge.id));
+  svg.querySelectorAll("path[data-edge-id]").forEach(node => {
+    if (!edgeIds.has(node.dataset.edgeId)) node.remove();
+  });
+  state.edges.forEach(edge => {
+    const from = findCard(edge.from);
+    const to = findCard(edge.to);
+    if (!from || !to) return;
+    let node = svg.querySelector(`path[data-edge-id="${edge.id}"]`);
+    if (!node) {
+      node = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      node.classList.add("connection-path");
+      node.dataset.edgeId = edge.id;
+      svg.append(node);
+    }
+    node.setAttribute("d", edgePath(portPoint(from, "out"), portPoint(to, "in")));
+  });
+  let draft = svg.querySelector("path[data-connection-draft]");
+  if (!state.connecting) {
+    if (draft) draft.remove();
+    return;
+  }
+  if (!draft) {
+    draft = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    draft.classList.add("connection-path", "dim");
+    draft.dataset.connectionDraft = "true";
+    svg.append(draft);
+  }
+  draft.setAttribute("d", edgePath(portPoint(findCard(state.connecting.from), "out"), state.connecting.to));
+}
+
+function updateSelectionGeometry() {
+  const rect = normalizedSelectionRect(state.selectionBox);
+  let node = els.stage.querySelector(".selection-box");
+  if (!rect) {
+    if (node) node.remove();
+  } else {
+    if (!node) {
+      node = document.createElement("div");
+      node.className = "selection-box";
+      els.stage.append(node);
+    }
+    node.style.left = `${rect.left}px`;
+    node.style.top = `${rect.top}px`;
+    node.style.width = `${rect.width}px`;
+    node.style.height = `${rect.height}px`;
+  }
+  cardNodes.forEach((cardNode, id) => {
+    cardNode.classList.toggle("selected", isCardSelected(id));
+  });
+  els.stage.querySelectorAll(".canvas-group[data-group-id]").forEach(groupNode => {
+    const bounds = groupBounds(state.groups.find(group => group.id === groupNode.dataset.groupId));
+    if (!bounds) return;
+    groupNode.style.left = `${bounds.x}px`;
+    groupNode.style.top = `${bounds.y}px`;
+    groupNode.style.width = `${bounds.w}px`;
+    groupNode.style.height = `${bounds.h}px`;
+  });
+}
+
+function updateViewportGeometry() {
+  applyViewport();
 }
 
 function normalizedSelectionRect(box) {
@@ -1717,10 +1821,10 @@ function renderEdges() {
     const from = findCard(edge.from);
     const to = findCard(edge.to);
     if (!from || !to) return "";
-    return `<path class="connection-path" d="${edgePath(portPoint(from, "out"), portPoint(to, "in"))}"></path>`;
+    return `<path class="connection-path" data-edge-id="${escapeAttr(edge.id)}" d="${edgePath(portPoint(from, "out"), portPoint(to, "in"))}"></path>`;
   }).join("");
   const draft = state.connecting
-    ? `<path class="connection-path dim" d="${edgePath(portPoint(findCard(state.connecting.from), "out"), state.connecting.to)}"></path>`
+    ? `<path class="connection-path dim" data-connection-draft="true" d="${edgePath(portPoint(findCard(state.connecting.from), "out"), state.connecting.to)}"></path>`
     : "";
   return `<svg class="connection-svg" aria-hidden="true">${paths}${draft}</svg>`;
 }
@@ -1734,10 +1838,7 @@ function syncCardLayoutMetrics() {
 
 function refreshLayoutGeometry() {
   syncCardLayoutMetrics();
-  const currentEdges = els.stage.querySelector(".connection-svg");
-  if (currentEdges) currentEdges.outerHTML = renderEdges();
-  const card = selectedCard();
-  if (card) positionNodeDock(card);
+  scheduleInteractionFrame({ edges: true, dock: true, minimap: true });
 }
 
 function render() {
@@ -1748,7 +1849,7 @@ function render() {
   const cardsHtml = state.cards.map(card => {
     const connected = connectedIds(card).size > 0;
     return `
-      <article class="card ${isCardSelected(card.id) ? "selected" : ""} ${connected ? "connected" : ""}" data-id="${card.id}" style="left:${card.x}px;top:${card.y}px;width:${card.w}px;min-height:${card.h}px">
+      <article class="card ${isCardSelected(card.id) ? "selected" : ""} ${connected ? "connected" : ""}" data-id="${card.id}" style="transform:translate3d(${card.x}px, ${card.y}px, 0);width:${card.w}px;min-height:${card.h}px">
         <button class="port input" data-port="input" data-id="${card.id}" title="输入"></button>
         <button class="port output" data-port="output" data-id="${card.id}" title="输出"></button>
         <div class="card-head">
@@ -1763,6 +1864,7 @@ function render() {
       </article>`;
   }).join("");
   els.stage.innerHTML = `${renderSelectionBox()}${renderCanvasGroups()}${cardsHtml}`;
+  cacheCardNodes();
   syncCardLayoutMetrics();
   els.stage.insertAdjacentHTML("afterbegin", renderEdges());
   renderInspector();
@@ -2242,7 +2344,7 @@ function continueDragAutoPan(timestamp) {
     state.viewport.x += velocity.x * elapsed / 1000;
     state.viewport.y += velocity.y * elapsed / 1000;
     updateDraggedCards(drag.lastClientX, drag.lastClientY);
-    render();
+    scheduleInteractionFrame({ viewport: true, cards: true, edges: true, selection: true, dock: true, minimap: true });
   }
   drag.autoPanFrame = requestAnimationFrame(continueDragAutoPan);
 }
@@ -2306,7 +2408,7 @@ function setupCanvasEvents() {
       event.preventDefault();
       event.stopPropagation();
       state.connecting = { from: output.dataset.id, to: clientToWorld(event.clientX, event.clientY) };
-      render();
+      scheduleInteractionFrame({ edges: true });
       return;
     }
 
@@ -2333,7 +2435,7 @@ function setupCanvasEvents() {
       };
       cardEl.setPointerCapture(event.pointerId);
       startDragAutoPan();
-      render();
+      scheduleInteractionFrame({ selection: true, dock: true });
       return;
     }
 
@@ -2349,20 +2451,20 @@ function setupCanvasEvents() {
       currentClientY: event.clientY
     };
     els.viewport.setPointerCapture(event.pointerId);
-    render();
+    scheduleInteractionFrame({ selection: true, dock: true });
   });
 
   window.addEventListener("pointermove", event => {
     if (state.connecting) {
       state.connecting.to = clientToWorld(event.clientX, event.clientY);
-      render();
+      scheduleInteractionFrame({ edges: true });
       return;
     }
     if (state.drag) {
       state.drag.lastClientX = event.clientX;
       state.drag.lastClientY = event.clientY;
       updateDraggedCards(event.clientX, event.clientY);
-      render();
+      scheduleInteractionFrame({ cards: true, edges: true, selection: true, dock: true, minimap: true });
       return;
     }
     if (state.selectionBox) {
@@ -2371,15 +2473,13 @@ function setupCanvasEvents() {
       state.selectionBox.currentClientX = event.clientX;
       state.selectionBox.currentClientY = event.clientY;
       setSelected(selectionHitCards(normalizedSelectionRect(state.selectionBox)).map(card => card.id));
-      render();
+      scheduleInteractionFrame({ selection: true, dock: true });
       return;
     }
     if (state.pan) {
       state.viewport.x = state.pan.viewX + event.clientX - state.pan.startX;
       state.viewport.y = state.pan.viewY + event.clientY - state.pan.startY;
-      applyViewport();
-      const card = selectedCard();
-      if (card) positionNodeDock(card);
+      scheduleInteractionFrame({ viewport: true, dock: true, minimap: true });
     }
   });
 
@@ -2410,13 +2510,13 @@ function setupCanvasEvents() {
       if (input && input.dataset.id !== from) {
         addEdge(from, input.dataset.id);
         state.connecting = null;
-        render();
+        scheduleInteractionFrame({ edges: true, selection: true, dock: true, minimap: true });
         save();
         return;
       }
       showConnectionCreateMenu(from, event.clientX, event.clientY);
       state.connecting = null;
-      render();
+      scheduleInteractionFrame({ edges: true });
       return;
     }
     if (state.selectionBox) {
@@ -2428,7 +2528,7 @@ function setupCanvasEvents() {
         setSelected(selectionHitCards(normalizedSelectionRect(state.selectionBox)).map(card => card.id));
       }
       state.selectionBox = null;
-      render();
+      scheduleInteractionFrame({ selection: true, dock: true });
       return;
     }
     if (state.drag || state.pan) save();
@@ -2436,6 +2536,7 @@ function setupCanvasEvents() {
     stopDragAutoPan();
     state.drag = null;
     state.pan = null;
+    scheduleInteractionFrame({ dock: true });
   });
 
   window.addEventListener("pointercancel", () => {
@@ -2446,7 +2547,7 @@ function setupCanvasEvents() {
     state.pan = null;
     state.selectionBox = null;
     state.connecting = null;
-    render();
+    scheduleInteractionFrame({ edges: true, selection: true, dock: true });
   });
 }
 

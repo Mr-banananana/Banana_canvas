@@ -17,6 +17,19 @@ $wheelBlock = [regex]::Match($app, 'els\.viewport\.addEventListener\("wheel", ev
 
 $checks = @(
   @{
+    Name = 'pointer movement uses incremental interaction frames'
+    Pass = $app -match 'function scheduleInteractionFrame\(' -and
+      $app -match 'function flushInteractionFrame\(' -and
+      $app -match 'if \(state\.drag\)[\s\S]*?scheduleInteractionFrame' -and
+      $app -notmatch 'if \(state\.drag\)[\s\S]{0,500}?render\(\)'
+  },
+  @{
+    Name = 'interaction frames preserve media DOM'
+    Pass = $app -match 'function updateCardTransforms\(' -and
+      $app -match 'node\.style\.transform' -and
+      $app -match 'function updateCardTransforms\(\)\s*\{(?:(?!innerHTML)[\s\S])*?\n\}'
+  },
+  @{
     Name = 'state tracks a lasso selection rectangle'
     Pass = $app -match 'selectionBox:\s*null'
   },

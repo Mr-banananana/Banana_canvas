@@ -405,6 +405,8 @@ button { cursor: pointer; }
 
 .card {
   position: absolute;
+  left: 0;
+  top: 0;
   width: 280px;
   min-height: 180px;
   border: 1px solid #303332;
@@ -413,6 +415,7 @@ button { cursor: pointer; }
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
   overflow: visible;
   user-select: none;
+  will-change: transform;
   transition: border-color 160ms ease, box-shadow 180ms ease, background-color 160ms ease;
 }
 
