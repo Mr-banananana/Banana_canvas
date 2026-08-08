@@ -58,6 +58,15 @@ const scaledThreshold = engine.calculateSnap({
 });
 assert.equal(scaledThreshold.dx, 19);
 
+const outsideScaledThreshold = engine.calculateSnap({
+  origin: { x: 0, y: 0 }, delta: { x: 10, y: 10 }, scale: 2,
+  gridSize: 16, thresholdPx: 6, altKey: false,
+  movingBounds: { x: 0, y: 0, width: 10, height: 10 },
+  targets: [{ x: 30, y: 30, width: 10, height: 10 }]
+});
+assert.deepEqual({ x: outsideScaledThreshold.dx, y: outsideScaledThreshold.dy }, { x: 16, y: 16 });
+assert.equal(outsideScaledThreshold.guides.length, 0);
+
 const free = engine.calculateSnap({
   origin: { x: 17, y: 31 }, delta: { x: 9, y: 2 }, scale: 1,
   gridSize: 16, thresholdPx: 6, altKey: true, movingBounds: null, targets: []
