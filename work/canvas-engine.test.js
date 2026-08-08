@@ -69,10 +69,27 @@ assert.equal(outsideScaledThreshold.guides.length, 0);
 
 const free = engine.calculateSnap({
   origin: { x: 17, y: 31 }, delta: { x: 9, y: 2 }, scale: 1,
-  gridSize: 16, thresholdPx: 6, altKey: true, movingBounds: null, targets: []
+  gridSize: 16, thresholdPx: 6, altKey: true,
+  movingBounds: { x: 17, y: 31, width: 20, height: 10 },
+  targets: [{ x: 46, y: 43, width: 20, height: 10 }]
 });
 assert.deepEqual({ x: free.dx, y: free.dy }, { x: 9, y: 2 });
 assert.equal(free.guides.length, 0);
+
+const groupSnap = engine.calculateSnap({
+  origin: { x: 19, y: 35 }, delta: { x: 10, y: 10 }, scale: 1,
+  gridSize: 16, thresholdPx: 6, altKey: false,
+  movingBounds: { x: 19, y: 35, width: 98, height: 70 }, targets: []
+});
+const movedGroup = [
+  { x: 19 + groupSnap.dx, y: 35 + groupSnap.dy },
+  { x: 67 + groupSnap.dx, y: 83 + groupSnap.dy }
+];
+assert.deepEqual(movedGroup, [{ x: 32, y: 48 }, { x: 80, y: 96 }]);
+assert.deepEqual(
+  { x: movedGroup[1].x - movedGroup[0].x, y: movedGroup[1].y - movedGroup[0].y },
+  { x: 48, y: 48 }
+);
 
 const committed = [];
 const commit = engine.createDebouncedCommit(value => committed.push(value), 10);

@@ -2892,6 +2892,31 @@ select:focus {
   background: linear-gradient(135deg, rgba(247, 223, 74, 0.18), rgba(19, 216, 174, 0.1));
   box-shadow: 0 0 0 1px rgba(19, 216, 174, 0.18), 0 16px 36px rgba(247, 223, 74, 0.08);
 }
+
+.alignment-guides {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.alignment-guide {
+  position: absolute;
+  background: rgba(19, 216, 174, 0.92);
+  box-shadow: 0 0 8px rgba(19, 216, 174, 0.62);
+}
+
+.alignment-guide.vertical {
+  top: -5000px;
+  width: 1px;
+  height: 10000px;
+}
+
+.alignment-guide.horizontal {
+  left: -5000px;
+  width: 10000px;
+  height: 1px;
+}
 /* Hover-up generation parameter picker for image and video nodes. */
 .hidden-select {
   position: absolute;

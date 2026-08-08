@@ -20,6 +20,12 @@ $blankSelectionBlock = [regex]::Match($app, 'setSelected\(\[\]\);[\s\S]*?state\.
 $lassoMoveBlock = [regex]::Match($app, 'if \(state\.selectionBox\) \{[\s\S]*?currentClientY = event\.clientY;[\s\S]*?scheduleInteractionFrame\(\{ selection: true, dock: true[^}]*\}\);').Value
 $lassoUpBlock = [regex]::Match($app, 'if \(state\.selectionBox\) \{[\s\S]*?state\.selectionBox = null;[\s\S]*?scheduleInteractionFrame\(\{ selection: true, dock: true[^}]*\}\);').Value
 $pointerCancelBlock = [regex]::Match($app, 'window\.addEventListener\("pointercancel", \(\) => \{[\s\S]*?scheduleInteractionFrame\(\{ edges: true, selection: true, dock: true[^}]*\}\);').Value
+$pendingDragBlock = [regex]::Match($app, 'function beginPendingCardDrag\(card, event\) \{[\s\S]*?\n\}').Value
+$commitPendingDragBlock = [regex]::Match($app, 'function commitPendingDrag\(event\) \{[\s\S]*?\n\}').Value
+$pendingClickBlock = [regex]::Match($app, 'function commitPendingCardClick\(event\) \{[\s\S]*?\n\}').Value
+$duplicateBlock = [regex]::Match($app, 'function duplicateSelectedNodes\(\) \{[\s\S]*?\n\}').Value
+$escapeBlock = [regex]::Match($app, 'if \(event\.key === "Escape"\) \{[\s\S]*?return;[\s\S]*?\n\s*\}').Value
+$cancelInteractionBlock = [regex]::Match($app, 'function cancelCanvasInteraction\(\) \{[\s\S]*?\n\}').Value
 
 $checks = @(
   @{
@@ -48,6 +54,55 @@ $checks = @(
       $lassoMoveBlock -match 'scheduleInteractionFrame\(\{ selection: true, dock: true, minimap: true \}\);' -and
       $lassoUpBlock -match 'scheduleInteractionFrame\(\{ selection: true, dock: true, minimap: true \}\);' -and
       $pointerCancelBlock -match 'scheduleInteractionFrame\(\{ edges: true, selection: true, dock: true, minimap: true \}\);'
+  },
+  @{
+    Name = 'drag begins only after a four screen pixel threshold'
+    Pass = $app -match 'DRAG_THRESHOLD_PX\s*=\s*4' -and
+      $app -match 'pendingDrag:\s*null' -and
+      $commitPendingDragBlock -match 'Math\.hypot\(' -and
+      $commitPendingDragBlock -match 'DRAG_THRESHOLD_PX' -and
+      $commitPendingDragBlock -match 'state\.drag\s*='
+  },
+  @{
+    Name = 'shift click toggles canvas selection without clearing the set'
+    Pass = $app -match 'function toggleSelected\(' -and
+      $pendingDragBlock -match 'event\.shiftKey' -and
+      $pendingClickBlock -match 'pending\.shiftKey[\s\S]*?toggleSelected\('
+  },
+  @{
+    Name = 'card dragging uses one snapped group delta'
+    Pass = $app -match 'CanvasEngine\.calculateSnap\(' -and
+      $app -match 'gridSize:\s*16' -and
+      $app -match 'thresholdPx:\s*6' -and
+      $app -match 'drag\.origins\.forEach\([\s\S]*?origin\.x \+ snapped\.dx[\s\S]*?origin\.y \+ snapped\.dy'
+  },
+  @{
+    Name = 'alignment guides render without intercepting input'
+    Pass = $html -match 'id="alignmentGuides"' -and
+      $app -match 'function renderAlignmentGuides\(guides\)' -and
+      $styles -match '\.alignment-guides[\s\S]*?pointer-events:\s*none'
+  },
+  @{
+    Name = 'alt bypasses grid and alignment snapping'
+    Pass = $app -match 'altKey:\s*event\.altKey' -and
+      $commitPendingDragBlock -match 'altKey:\s*event\.altKey'
+  },
+  @{
+    Name = 'ctrl d duplicates selection once with a world offset'
+    Pass = $duplicateBlock -match 'copyNodes\("selected"\)' -and
+      $duplicateBlock -match 'if \(!selectedIds\(\)\.length\) return;' -and
+      $app -match 'DUPLICATE_OFFSET_WORLD\s*=\s*24' -and
+      ([regex]::Matches($duplicateBlock, 'render\(\)').Count -eq 1) -and
+      ([regex]::Matches($duplicateBlock, 'save\(\)').Count -eq 1) -and
+      $app -match 'event\.ctrlKey && event\.key\.toLowerCase\(\) === "d"'
+  },
+  @{
+    Name = 'escape cancels active canvas interaction and guides'
+    Pass = $app -match 'CanvasEngine\.createInteractionController\(' -and
+      $escapeBlock -match 'cancelCanvasInteraction\(\)' -and
+      $cancelInteractionBlock -match 'interactionController\.cancel\(\)' -and
+      $cancelInteractionBlock -match 'state\.pendingDrag\s*=\s*null' -and
+      $cancelInteractionBlock -match 'renderAlignmentGuides\(\[\]\)'
   },
   @{
     Name = 'wheel interactions use incremental frames without render'
@@ -289,7 +344,7 @@ $checks = @(
     Pass = $app -match 'function continueDragAutoPan\(' -and
       $app -match 'requestAnimationFrame\(continueDragAutoPan\)' -and
       $app -match 'state\.viewport\.x\s*\+=' -and
-      $app -match 'updateDraggedCards\(drag\.lastClientX, drag\.lastClientY\)'
+      $app -match 'updateDraggedCards\(drag\.lastClientX, drag\.lastClientY, drag\.altKey\)'
   },
   @{
     Name = 'commerce is a dedicated left-toolbar workspace entry'
