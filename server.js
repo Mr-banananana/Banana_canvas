@@ -7,6 +7,8 @@ const { URL } = require("url");
 const PORT = Number(process.env.PORT || 5177);
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
+const CANVAS_PERFORMANCE_FIXTURE_PATH = path.join(ROOT, "work", "canvas-performance-fixture.js");
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 const AGNES_BASE = "https://apihub.agnes-ai.com";
 const AGNES_V1 = `${AGNES_BASE}/v1`;
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
@@ -33,6 +35,33 @@ function send(res, status, body, headers = {}) {
 
 function sendJson(res, status, payload) {
   send(res, status, JSON.stringify(payload), JSON_HEADERS);
+}
+
+function isLoopbackRequest(req) {
+  let hostname = "";
+  try {
+    hostname = new URL(`http://${req.headers.host || ""}`).hostname.toLowerCase();
+  } catch {}
+  const remoteAddress = String(req.socket.remoteAddress || "").toLowerCase();
+  const loopbackPeer = remoteAddress === "::1" || remoteAddress.startsWith("127.") || remoteAddress.startsWith("::ffff:127.");
+  return LOOPBACK_HOSTS.has(hostname) && loopbackPeer;
+}
+
+function serveCanvasPerformanceFixture(req, res) {
+  if (!isLoopbackRequest(req)) {
+    send(res, 404, "Not found", { "content-type": "text/plain; charset=utf-8" });
+    return;
+  }
+  fs.readFile(CANVAS_PERFORMANCE_FIXTURE_PATH, (error, data) => {
+    if (error) {
+      send(res, 404, "Not found", { "content-type": "text/plain; charset=utf-8" });
+      return;
+    }
+    send(res, 200, data, {
+      "content-type": MIME_TYPES[".js"],
+      "cache-control": "no-store"
+    });
+  });
 }
 
 function parseBody(req) {
@@ -489,6 +518,10 @@ function serveStatic(req, res) {
 async function route(req, res) {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    if (req.method === "GET" && url.pathname === "/_dev/canvas-performance-fixture.js") {
+      serveCanvasPerformanceFixture(req, res);
+      return;
+    }
     if (req.method === "GET" && url.pathname === "/healthz") {
       sendJson(res, 200, { status: "ok" });
       return;

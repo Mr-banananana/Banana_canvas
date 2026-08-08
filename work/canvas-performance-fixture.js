@@ -1,5 +1,6 @@
 (function exposeCanvasPerformanceFixture() {
-  if (typeof window === "undefined" || window.__CANVAS_PERFORMANCE_FIXTURE__ !== true) return;
+  const requestedCount = Number(window?.__CANVAS_PERFORMANCE_FIXTURE__?.count);
+  if (![100, 300].includes(requestedCount)) return;
 
   function createCanvasPerformanceFixture(count) {
     const fixtureCount = Number(count) === 300 ? 300 : 100;
@@ -26,4 +27,5 @@
   }
 
   window.createCanvasPerformanceFixture = createCanvasPerformanceFixture;
+  window.dispatchEvent(new Event("canvas-performance-fixture-ready"));
 })();

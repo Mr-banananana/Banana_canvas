@@ -656,6 +656,7 @@ function commitLocalState(payload) {
 }
 
 function commitScheduledLocalSave(marker) {
+  if (performanceFixtureMode()) return;
   const canvasId = marker?.canvasId || canvasLibrary.activeCanvasId;
   if (state.historyTransaction && state.historyTransaction.label !== "wheel") {
     debouncedLocalSave({ canvasId });
@@ -666,10 +667,15 @@ function commitScheduledLocalSave(marker) {
 }
 
 function scheduleLocalSave(canvasId = canvasLibrary.activeCanvasId) {
+  if (performanceFixtureMode()) return;
   debouncedLocalSave({ canvasId });
 }
 
 function flushLocalSave() {
+  if (performanceFixtureMode()) {
+    debouncedLocalSave.cancel();
+    return;
+  }
   if (state.historyTransaction) commitHistoryTransaction();
   debouncedLocalSave.cancel();
   commitLocalState(captureLocalSavePayload(canvasLibrary.activeCanvasId));
@@ -4094,6 +4100,52 @@ function seedDemo() {
   selectSingle(state.cards[1].id);
 }
 
+function requestedPerformanceFixtureCount() {
+  const count = Number(window.__CANVAS_PERFORMANCE_FIXTURE__?.count);
+  return count === 100 || count === 300 ? count : 0;
+}
+
+function performanceFixtureMode() {
+  return requestedPerformanceFixtureCount() > 0;
+}
+
+function installPerformanceFixture() {
+  const count = requestedPerformanceFixtureCount();
+  if (!count) return false;
+  if (window.canvasPerformanceFixtureReady === true && window.canvasPerformanceFixtureCount === count) return true;
+  if (typeof window.createCanvasPerformanceFixture !== "function") return false;
+  const fixture = window.createCanvasPerformanceFixture(count);
+  if (!Array.isArray(fixture?.cards) || fixture.cards.length !== count) return false;
+  if (!Array.isArray(fixture?.edges) || fixture.edges.length !== count - 1) return false;
+
+  const fixtureCanvas = createCanvasRecord(`性能测试 ${count} 节点`, {
+    id: "canvas_performance_fixture",
+    cards: fixture.cards,
+    edges: fixture.edges,
+    groups: [],
+    viewport: { x: 80, y: 80, scale: 0.35 }
+  });
+  canvasLibrary = {
+    schema: CANVAS_LIBRARY_SCHEMA,
+    activeCanvasId: fixtureCanvas.id,
+    canvases: [fixtureCanvas]
+  };
+  applyCanvasRecord(fixtureCanvas);
+  window.canvasPerformanceFixtureCount = state.cards.length;
+  window.canvasPerformanceFixtureEdgeCount = state.edges.length;
+  window.canvasPerformanceFixtureReady = true;
+  renderCanvasLibrary();
+  render();
+  return true;
+}
+
+function setupPerformanceFixture() {
+  if (!performanceFixtureMode()) return false;
+  window.addEventListener("canvas-performance-fixture-ready", installPerformanceFixture);
+  installPerformanceFixture();
+  return true;
+}
+
 function deleteSelectedNode() {
   const deletedIds = new Set(selectedIds());
   if (!deletedIds.size) return;
@@ -4432,9 +4484,10 @@ function setupKeyboardShortcuts() {
   });
 }
 function boot() {
+  const fixtureMode = performanceFixtureMode();
   window.addEventListener("beforeunload", flushLocalSave);
   window.addEventListener("pagehide", flushLocalSave);
-  load();
+  if (!fixtureMode) load();
   setupToolbar();
   setupCanvasEvents();
   setupContextMenu();
@@ -4446,11 +4499,16 @@ function boot() {
   setupSettings();
   setupActions();
   bindInputs();
-  if (!state.cards.length) seedDemo();
-  if (state.workspaceMode === "commerce") setWorkspaceMode("commerce");
-  else if (state.workspaceMode === "product-video") setWorkspaceMode("product-video");
-  else render();
-  save();
+  if (fixtureMode) {
+    setupPerformanceFixture();
+    if (!window.canvasPerformanceFixtureReady) render();
+  } else {
+    if (!state.cards.length) seedDemo();
+    if (state.workspaceMode === "commerce") setWorkspaceMode("commerce");
+    else if (state.workspaceMode === "product-video") setWorkspaceMode("product-video");
+    else render();
+    save();
+  }
 }
 
 boot();

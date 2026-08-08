@@ -411,16 +411,19 @@
     <script>
       (() => {
         const fixtureCount = new URLSearchParams(window.location.search).get("canvasPerformanceFixture");
-        const localHosts = new Set(["localhost", "127.0.0.1", "::1"]);
+        const localHosts = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
         if (!localHosts.has(window.location.hostname) || !["100", "300"].includes(fixtureCount)) return;
-        window.__CANVAS_PERFORMANCE_FIXTURE__ = true;
+        window.__CANVAS_PERFORMANCE_FIXTURE__ = { count: Number(fixtureCount) };
+        window.canvasPerformanceFixtureReady = false;
+        window.canvasPerformanceFixtureCount = Number(fixtureCount);
+        window.canvasPerformanceFixtureEdgeCount = 0;
         const fixtureScript = document.createElement("script");
-        fixtureScript.src = "/work/canvas-performance-fixture.js?v=canvas-interactions-2";
+        fixtureScript.src = "/_dev/canvas-performance-fixture.js?v=canvas-interactions-3";
         document.head.appendChild(fixtureScript);
       })();
     </script>
-    <script src="/canvas-engine.js?v=canvas-interactions-2"></script>
-    <script src="/app.js?v=canvas-interactions-2"></script>
+    <script src="/canvas-engine.js?v=canvas-interactions-3"></script>
+    <script src="/app.js?v=canvas-interactions-3"></script>
   </body>
 </html>
 

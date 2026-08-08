@@ -78,6 +78,11 @@ $settleHistoryBlock = [regex]::Match($app, 'function settleHistoryInteractionFor
 $undoCanvasBlock = [regex]::Match($app, 'function undoCanvas\(\) \{[\s\S]*?\n\}').Value
 $redoCanvasBlock = [regex]::Match($app, 'function redoCanvas\(\) \{[\s\S]*?\n\}').Value
 $restoreNamedSnapshotBlock = [regex]::Match($app, 'function restoreNamedCanvasSnapshot\(id\) \{[\s\S]*?\n\}').Value
+$performanceFixtureCountBlock = [regex]::Match($app, 'function requestedPerformanceFixtureCount\(\) \{[\s\S]*?\n\}').Value
+$performanceFixtureModeBlock = [regex]::Match($app, 'function performanceFixtureMode\(\) \{[\s\S]*?\n\}').Value
+$installPerformanceFixtureBlock = [regex]::Match($app, 'function installPerformanceFixture\(\) \{[\s\S]*?\n\}').Value
+$setupPerformanceFixtureBlock = [regex]::Match($app, 'function setupPerformanceFixture\(\) \{[\s\S]*?\n\}').Value
+$bootBlock = [regex]::Match($app, 'function boot\(\) \{[\s\S]*?\n\}').Value
 $performanceFixturePass = $false
 if ($fixture) {
   $performanceFixtureProbe = @'
@@ -87,10 +92,18 @@ const source = fs.readFileSync(process.env.CANVAS_PERFORMANCE_FIXTURE_PATH, "utf
 const hiddenContext = { window: {} };
 vm.runInNewContext(source, hiddenContext);
 if ("createCanvasPerformanceFixture" in hiddenContext.window) process.exit(1);
-const context = { window: { __CANVAS_PERFORMANCE_FIXTURE__: true } };
+let readyEvents = 0;
+const context = {
+  Event: class Event { constructor(type) { this.type = type; } },
+  window: {
+    __CANVAS_PERFORMANCE_FIXTURE__: { count: 100 },
+    dispatchEvent(event) { if (event.type === "canvas-performance-fixture-ready") readyEvents += 1; }
+  }
+};
 vm.runInNewContext(source, context);
 const createFixture = context.window.createCanvasPerformanceFixture;
 if (typeof createFixture !== "function") process.exit(1);
+if (readyEvents !== 1) process.exit(1);
 for (const count of [100, 300]) {
   const result = createFixture(count);
   if (!result || result.cards.length !== count || result.edges.length !== count - 1) process.exit(1);
@@ -108,6 +121,141 @@ if (createFixture(7).cards.length !== 100) process.exit(1);
   Remove-Item Env:\CANVAS_PERFORMANCE_FIXTURE_PATH
   Remove-Item Env:\CANVAS_PERFORMANCE_FIXTURE_PROBE
 }
+$performanceFixtureInstallPass = $false
+if ($performanceFixtureCountBlock -and $performanceFixtureModeBlock -and $installPerformanceFixtureBlock -and $setupPerformanceFixtureBlock) {
+  $performanceFixtureInstallProbe = @"
+let assertionNumber = 0;
+function assert(condition) { assertionNumber += 1; if (!condition) throw new Error("assertion " + assertionNumber); }
+const listeners = new Map();
+const window = {
+  __CANVAS_PERFORMANCE_FIXTURE__: { count: 100 },
+  canvasPerformanceFixtureReady: false,
+  canvasPerformanceFixtureCount: 100,
+  addEventListener(name, callback) { listeners.set(name, callback); },
+  dispatchEvent() {}
+};
+const state = { cards: [], edges: [], groups: [], canvasSnapshots: [], viewport: {}, workspaceMode: "canvas" };
+let canvasLibrary = { schema: "schema-v1", activeCanvasId: "canvas_default", canvases: [] };
+const CANVAS_LIBRARY_SCHEMA = "schema-v1";
+let renders = 0;
+let libraryRenders = 0;
+function createCanvasRecord(name, source) { return { ...source, name }; }
+function applyCanvasRecord(record) {
+  state.cards = record.cards;
+  state.edges = record.edges;
+  state.groups = record.groups;
+  state.canvasSnapshots = [];
+  state.viewport = record.viewport;
+}
+function canvasSnapshot() { return { cards: state.cards, edges: state.edges }; }
+function render() { renders += 1; }
+function renderCanvasLibrary() { libraryRenders += 1; }
+$performanceFixtureCountBlock
+$performanceFixtureModeBlock
+$installPerformanceFixtureBlock
+$setupPerformanceFixtureBlock
+
+assert(setupPerformanceFixture() === true);
+assert(window.canvasPerformanceFixtureReady === false && state.cards.length === 0);
+window.createCanvasPerformanceFixture = count => ({
+  cards: Array.from({ length: count }, (_, index) => ({ id: "perf_" + index })),
+  edges: Array.from({ length: count - 1 }, (_, index) => ({ id: "edge_" + index, from: "perf_" + index, to: "perf_" + (index + 1) }))
+});
+listeners.get("canvas-performance-fixture-ready")();
+assert(window.canvasPerformanceFixtureReady === true);
+assert(window.canvasPerformanceFixtureCount === 100 && window.canvasPerformanceFixtureEdgeCount === 99);
+assert(state.cards.length === 100 && state.edges.length === 99 && renders === 1 && libraryRenders === 1);
+assert(installPerformanceFixture() === true && renders === 1);
+
+window.__CANVAS_PERFORMANCE_FIXTURE__ = { count: 300 };
+window.canvasPerformanceFixtureReady = false;
+window.canvasPerformanceFixtureCount = 300;
+state.cards = [];
+state.edges = [];
+renders = 0;
+assert(setupPerformanceFixture() === true);
+assert(window.canvasPerformanceFixtureReady === true && state.cards.length === 300 && state.edges.length === 299);
+assert(renders === 1);
+"@
+  $env:CANVAS_PERFORMANCE_INSTALL_PROBE = $performanceFixtureInstallProbe
+  & node -e 'eval(process.env.CANVAS_PERFORMANCE_INSTALL_PROBE)'
+  $performanceFixtureInstallPass = $LASTEXITCODE -eq 0
+  Remove-Item Env:\CANVAS_PERFORMANCE_INSTALL_PROBE
+}
+$performanceFixtureServerPass = $false
+$performanceFixtureServerProbe = @'
+const fs = require("node:fs");
+const http = require("node:http");
+const net = require("node:net");
+const path = require("node:path");
+const { spawn } = require("node:child_process");
+const { once } = require("node:events");
+
+function request(port, pathname, host) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ hostname: "127.0.0.1", port, path: pathname, headers: { Host: host } }, response => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", chunk => { body += chunk; });
+      response.on("end", () => resolve({ status: response.statusCode, body }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+async function freePort() {
+  const server = net.createServer();
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const port = server.address().port;
+  server.close();
+  await once(server, "close");
+  return port;
+}
+
+(async () => {
+  const root = process.env.CANVAS_PERFORMANCE_SERVER_ROOT;
+  const port = await freePort();
+  const child = spawn(process.execPath, ["server.js"], {
+    cwd: root,
+    env: { ...process.env, PORT: String(port) },
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  let stderr = "";
+  child.stdout.resume();
+  child.stderr.on("data", chunk => { stderr += chunk; });
+  try {
+    let appResponse = null;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      try {
+        appResponse = await request(port, "/", `127.0.0.1:${port}`);
+        break;
+      } catch {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+    if (!appResponse || appResponse.status !== 200 || !appResponse.body.includes("Banana Canvas")) process.exitCode = 1;
+    const fixtureResponse = await request(port, "/_dev/canvas-performance-fixture.js?v=test", `127.0.0.1:${port}`);
+    const expectedFixture = fs.readFileSync(path.join(root, "work", "canvas-performance-fixture.js"), "utf8");
+    if (fixtureResponse.status !== 200 || fixtureResponse.body !== expectedFixture) process.exitCode = 1;
+    const blockedResponse = await request(port, "/_dev/canvas-performance-fixture.js", "example.test");
+    if (blockedResponse.status !== 404) process.exitCode = 1;
+  } finally {
+    if (child.exitCode === null) child.kill();
+    if (child.exitCode === null) await Promise.race([once(child, "exit"), new Promise(resolve => setTimeout(resolve, 2000))]);
+    if (child.exitCode === null) child.kill();
+    if (stderr) process.stderr.write(stderr);
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+'@
+$env:CANVAS_PERFORMANCE_SERVER_ROOT = (Join-Path $PSScriptRoot '..')
+$env:CANVAS_PERFORMANCE_SERVER_PROBE = $performanceFixtureServerProbe
+& node -e 'eval(process.env.CANVAS_PERFORMANCE_SERVER_PROBE)'
+$performanceFixtureServerPass = $LASTEXITCODE -eq 0
+Remove-Item Env:\CANVAS_PERFORMANCE_SERVER_ROOT
+Remove-Item Env:\CANVAS_PERFORMANCE_SERVER_PROBE
 $edgeNormalizationFixturePass = $false
 if ($normalizeEdgesBlock) {
   $edgeNormalizationProbe = @"
@@ -212,6 +360,7 @@ let scheduleCalls = 0;
 function debouncedLocalSave(marker) { scheduleCalls += 1; queuedMarker = marker; }
 let transactionCommits = 0;
 function commitHistoryTransaction() { transactionCommits += 1; state.historyTransaction = null; }
+function performanceFixtureMode() { return false; }
 function assert(condition) { if (!condition) process.exit(1); }
 $captureLocalSavePayloadBlock
 $commitScheduledLocalSaveBlock
@@ -406,27 +555,47 @@ $checks = @(
     Pass = $performanceFixturePass -and
       $fixture -match '__CANVAS_PERFORMANCE_FIXTURE__' -and
       $fixture -match 'window\.createCanvasPerformanceFixture\s*=\s*createCanvasPerformanceFixture' -and
-      $fixture -notmatch 'state\.cards|localStorage|dispatchEvent'
+      $fixture -match 'canvas-performance-fixture-ready' -and
+      $fixture -notmatch 'state\.cards|localStorage'
   },
   @{
-    Name = 'local performance fixture loader is explicit and cache busted'
+    Name = 'local performance fixture route serves real content and rejects nonloopback hosts'
+    Pass = $performanceFixtureServerPass -and
+      $server -match '/_dev/canvas-performance-fixture\.js' -and
+      $server -match 'canvas-performance-fixture\.js'
+  },
+  @{
+    Name = 'local performance fixture loader is explicit cache busted and race safe'
     Pass = $html -match 'canvasPerformanceFixture' -and
-      $html -match 'new Set\(\["localhost", "127\.0\.0\.1", "::1"\]\)' -and
+      $html -match 'new Set\(\["localhost", "127\.0\.0\.1", "\[::1\]", "::1"\]\)' -and
       $html -match 'if \(!localHosts\.has\(window\.location\.hostname\) \|\| !\["100", "300"\]\.includes\(fixtureCount\)\) return;' -and
-      $html -match 'window\.__CANVAS_PERFORMANCE_FIXTURE__ = true' -and
+      $html -match 'window\.__CANVAS_PERFORMANCE_FIXTURE__ = \{ count:' -and
+      $html -match 'window\.canvasPerformanceFixtureReady = false' -and
       $html -match 'document\.createElement\("script"\)' -and
-      $html -match 'canvas-performance-fixture\.js\?v=canvas-interactions-2'
+      $html -match '/_dev/canvas-performance-fixture\.js\?v=canvas-interactions-3'
+  },
+  @{
+    Name = 'performance fixture installs for both script races without persistence'
+    Pass = $performanceFixtureInstallPass -and
+      $setupPerformanceFixtureBlock -match 'addEventListener\("canvas-performance-fixture-ready"' -and
+      $setupPerformanceFixtureBlock -match 'installPerformanceFixture\(\)' -and
+      $scheduleLocalSaveBlock -match 'if \(performanceFixtureMode\(\)\) return;' -and
+      $flushLocalSaveBlock -match 'if \(performanceFixtureMode\(\)\) \{[\s\S]*?debouncedLocalSave\.cancel\(\);[\s\S]*?return;' -and
+      $bootBlock -match 'if \(!fixtureMode\) load\(\);' -and
+      $bootBlock -match 'if \(fixtureMode\)' -and
+      $bootBlock -match 'setupPerformanceFixture\(\)' -and
+      $bootBlock -match 'if \(!fixtureMode\)[\s\S]*?seedDemo\(\)[\s\S]*?save\(\)'
   },
   @{
     Name = 'canvas engine and app scripts are cache busted together'
-    Pass = $html -match 'canvas-engine\.js\?v=canvas-interactions-2' -and
-      $html -match 'app\.js\?v=canvas-interactions-2'
+    Pass = $html -match 'canvas-engine\.js\?v=canvas-interactions-3' -and
+      $html -match 'app\.js\?v=canvas-interactions-3'
   },
   @{
     Name = 'README documents optimized canvas interactions'
     Pass = $readme -match '左键.*框选' -and
       $readme -match 'Shift.*框选' -and
-      $readme -match '4px.*拖动' -and
+      $readme -match '达到 4px.*拖动' -and
       $readme -match '16px.*网格.*对齐参考线' -and
       $readme -match 'Alt.*绕过吸附' -and
       $readme -match 'Ctrl\+D' -and
@@ -1265,7 +1434,7 @@ $checks = @(
   },
   @{
     Name = 'prompt fixes are cache-busted in the served page'
-    Pass = $html -match 'app\.js\?v=canvas-interactions-2' -and $html -match 'styles\.css\?v=canvas-controls-9'
+    Pass = $html -match 'app\.js\?v=canvas-interactions-3' -and $html -match 'styles\.css\?v=canvas-controls-9'
   },
   @{
     Name = 'server exposes a deployment health endpoint'
