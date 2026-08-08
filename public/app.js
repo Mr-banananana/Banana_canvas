@@ -107,6 +107,7 @@ const state = {
   drag: null,
   pan: null,
   selectionBox: null,
+  alignmentGuides: [],
   connecting: null,
   clipboard: null,
   contextWorld: null,
@@ -882,6 +883,7 @@ function flushInteractionFrame(flags) {
     updateSelectionGeometry();
     syncInteractionInspector();
   }
+  if (dirty.guides) renderAlignmentGuides(state.alignmentGuides);
   if (dirty.dock) {
     const card = selectedCard();
     if (card) positionNodeDock(card);
@@ -956,7 +958,7 @@ function updateEdgeGeometry() {
 
 function updateSelectionGeometry() {
   const rect = normalizedSelectionRect(state.selectionBox);
-  if (rect) setSelected(selectionHitCards(rect).map(card => card.id));
+  if (rect) setSelected(lassoSelectionIds(state.selectionBox, rect));
   let node = els.stage.querySelector(".selection-box");
   if (!rect) {
     if (node) node.remove();
@@ -1025,6 +1027,17 @@ function selectionHitCards(rect) {
     card.y + card.h < rect.top ||
     card.y > rect.bottom
   ));
+}
+
+function lassoSelectionIds(box, rect) {
+  const hitIds = selectionHitCards(rect).map(card => card.id);
+  if (!box?.shiftKey) return hitIds;
+  const selected = new Set(box.selectionBefore || []);
+  hitIds.forEach(id => {
+    if (selected.has(id)) selected.delete(id);
+    else selected.add(id);
+  });
+  return [...selected];
 }
 
 function renderSelectionBox() {
@@ -1202,6 +1215,8 @@ function renderMinimap() {
 }
 
 function minimapFocus(event) {
+  if (event.button !== 0) return;
+  event.stopPropagation();
   const canvas = document.getElementById("minimapCanvas");
   const bounds = canvas?.__mapBounds;
   if (!bounds) return;
@@ -1921,7 +1936,8 @@ function render() {
   }).join("");
   els.stage.innerHTML = `${renderSelectionBox()}${renderCanvasGroups()}${cardsHtml}`;
   els.stage.prepend(els.alignmentGuides);
-  renderAlignmentGuides([]);
+  state.alignmentGuides = [];
+  renderAlignmentGuides(state.alignmentGuides);
   cacheCardNodes();
   syncCardLayoutMetrics();
   els.stage.insertAdjacentHTML("afterbegin", renderEdges());
@@ -2382,8 +2398,7 @@ function cardInteractionBounds(card) {
   };
 }
 
-function cardsInteractionBounds(ids) {
-  const cards = ids.map(findCard).filter(Boolean);
+function cardsInteractionBounds(cards) {
   if (!cards.length) return null;
   const left = Math.min(...cards.map(card => card.x));
   const top = Math.min(...cards.map(card => card.y));
@@ -2419,7 +2434,10 @@ function commitPendingDrag(event) {
     else selectSingle(pending.id);
   }
   const dragIds = selectedIds();
-  const bounds = cardsInteractionBounds(dragIds);
+  const cardsById = new Map(state.cards.map(card => [card.id, card]));
+  const dragCards = dragIds.map(id => cardsById.get(id)).filter(Boolean);
+  const idSet = new Set(dragIds);
+  const bounds = cardsInteractionBounds(dragCards);
   interactionController.end(event.pointerId);
   if (!bounds || !interactionController.begin("dragging", { pointerId: event.pointerId, cardId: pending.id })) {
     state.pendingDrag = null;
@@ -2433,15 +2451,15 @@ function commitPendingDrag(event) {
     startClientY: pending.startClientY,
     lastClientX: event.clientX,
     lastClientY: event.clientY,
+    viewX: state.viewport.x,
+    viewY: state.viewport.y,
     altKey: event.altKey,
     ids: dragIds,
-    idSet: new Set(dragIds),
+    idSet,
     bounds,
+    targets: state.cards.filter(card => !idSet.has(card.id)).map(cardInteractionBounds),
     selectionBefore: pending.selectionBefore,
-    origins: dragIds.map(id => {
-      const item = findCard(id);
-      return { id, x: item.x, y: item.y };
-    })
+    origins: dragCards.map(card => ({ card, id: card.id, x: card.x, y: card.y }))
   };
   state.pendingDrag = null;
   updateDraggedCards(event.clientX, event.clientY, event.altKey);
@@ -2462,31 +2480,23 @@ function commitPendingCardClick(event) {
 
 function updateDraggedCards(clientX, clientY, altKey = false) {
   const drag = state.drag;
-  const card = drag && findCard(drag.id);
-  if (!drag || !card) return;
+  if (!drag?.origins?.length) return;
   const point = clientToWorld(clientX, clientY);
-  if (drag.origins?.length) {
-    const snapped = CanvasEngine.calculateSnap({
-      origin: { x: drag.bounds.x, y: drag.bounds.y },
-      delta: { x: point.x - drag.start.x, y: point.y - drag.start.y },
-      scale: state.viewport.scale,
-      gridSize: 16,
-      thresholdPx: 6,
-      altKey,
-      movingBounds: drag.bounds,
-      targets: state.cards.filter(item => !drag.idSet.has(item.id)).map(cardInteractionBounds)
-    });
-    drag.origins.forEach(origin => {
-      const item = findCard(origin.id);
-      if (!item) return;
-      item.x = Math.round(origin.x + snapped.dx);
-      item.y = Math.round(origin.y + snapped.dy);
-    });
-    renderAlignmentGuides(snapped.guides);
-  } else {
-    card.x = Math.round(point.x - drag.dx);
-    card.y = Math.round(point.y - drag.dy);
-  }
+  const snapped = CanvasEngine.calculateSnap({
+    origin: { x: drag.bounds.x, y: drag.bounds.y },
+    delta: { x: point.x - drag.start.x, y: point.y - drag.start.y },
+    scale: state.viewport.scale,
+    gridSize: 16,
+    thresholdPx: 6,
+    altKey,
+    movingBounds: drag.bounds,
+    targets: drag.targets
+  });
+  drag.origins.forEach(origin => {
+    origin.card.x = Math.round(origin.x + snapped.dx);
+    origin.card.y = Math.round(origin.y + snapped.dy);
+  });
+  state.alignmentGuides = snapped.guides;
 }
 
 function continueDragAutoPan(timestamp) {
@@ -2500,7 +2510,7 @@ function continueDragAutoPan(timestamp) {
     state.viewport.x += velocity.x * elapsed / 1000;
     state.viewport.y += velocity.y * elapsed / 1000;
     updateDraggedCards(drag.lastClientX, drag.lastClientY, drag.altKey);
-    scheduleInteractionFrame({ viewport: true, cards: true, edges: true, selection: true, dock: true, minimap: true });
+    scheduleInteractionFrame({ viewport: true, cards: true, edges: true, selection: true, guides: true, dock: true, minimap: true });
   }
   drag.autoPanFrame = requestAnimationFrame(continueDragAutoPan);
 }
@@ -2516,12 +2526,18 @@ function stopDragAutoPan() {
   if (state.drag) state.drag.autoPanFrame = 0;
 }
 
+function isActiveInteractionPointer(event) {
+  const active = interactionController.value;
+  return active.mode === "idle" || active.pointerId === event.pointerId;
+}
+
 function cancelCanvasInteraction() {
   if (state.drag?.origins) {
     state.drag.origins.forEach(origin => {
-      const card = findCard(origin.id);
-      if (card) Object.assign(card, { x: origin.x, y: origin.y });
+      Object.assign(origin.card, { x: origin.x, y: origin.y });
     });
+    state.viewport.x = state.drag.viewX;
+    state.viewport.y = state.drag.viewY;
     setSelected(state.drag.selectionBefore);
   }
   if (state.pan) {
@@ -2535,10 +2551,10 @@ function cancelCanvasInteraction() {
   state.pan = null;
   state.selectionBox = null;
   state.connecting = null;
+  state.alignmentGuides = [];
   interactionController.cancel();
   els.viewport.classList.remove("is-panning");
-  renderAlignmentGuides([]);
-  scheduleInteractionFrame({ viewport: true, cards: true, edges: true, selection: true, dock: true, minimap: true });
+  scheduleInteractionFrame({ viewport: true, cards: true, edges: true, selection: true, guides: true, dock: true, minimap: true });
 }
 
 function setupCanvasEvents() {
@@ -2592,6 +2608,7 @@ function setupCanvasEvents() {
       event.stopPropagation();
       if (!interactionController.begin("connecting", { pointerId: event.pointerId, cardId: output.dataset.id })) return;
       state.connecting = { from: output.dataset.id, to: clientToWorld(event.clientX, event.clientY) };
+      els.viewport.setPointerCapture(event.pointerId);
       scheduleInteractionFrame({ edges: true });
       return;
     }
@@ -2610,7 +2627,7 @@ function setupCanvasEvents() {
     if (!interactionController.begin("selecting", { pointerId: event.pointerId })) return;
     const point = clientToWorld(event.clientX, event.clientY);
     const selectionBefore = selectedIds();
-    setSelected([]);
+    if (!event.shiftKey) setSelected([]);
     state.selectionBox = {
       startWorld: point,
       currentWorld: point,
@@ -2618,6 +2635,7 @@ function setupCanvasEvents() {
       startClientY: event.clientY,
       currentClientX: event.clientX,
       currentClientY: event.clientY,
+      shiftKey: event.shiftKey,
       selectionBefore
     };
     els.viewport.setPointerCapture(event.pointerId);
@@ -2625,6 +2643,7 @@ function setupCanvasEvents() {
   });
 
   window.addEventListener("pointermove", event => {
+    if (!isActiveInteractionPointer(event)) return;
     if (state.connecting) {
       state.connecting.to = clientToWorld(event.clientX, event.clientY);
       scheduleInteractionFrame({ edges: true });
@@ -2632,7 +2651,7 @@ function setupCanvasEvents() {
     }
     if (state.pendingDrag) {
       if (commitPendingDrag(event)) {
-        scheduleInteractionFrame({ cards: true, edges: true, selection: true, dock: true, minimap: true });
+        scheduleInteractionFrame({ cards: true, edges: true, selection: true, guides: true, dock: true, minimap: true });
       }
       return;
     }
@@ -2641,7 +2660,7 @@ function setupCanvasEvents() {
       state.drag.lastClientY = event.clientY;
       state.drag.altKey = event.altKey;
       updateDraggedCards(event.clientX, event.clientY, event.altKey);
-      scheduleInteractionFrame({ cards: true, edges: true, selection: true, dock: true, minimap: true });
+      scheduleInteractionFrame({ cards: true, edges: true, selection: true, guides: true, dock: true, minimap: true });
       return;
     }
     if (state.selectionBox) {
@@ -2679,6 +2698,7 @@ function setupCanvasEvents() {
   });
 
   window.addEventListener("pointerup", event => {
+    if (!isActiveInteractionPointer(event)) return;
     if (state.connecting) {
       const element = document.elementFromPoint(event.clientX, event.clientY);
       const input = element && element.closest(".port.input");
@@ -2707,9 +2727,9 @@ function setupCanvasEvents() {
       const movedX = Math.abs(state.selectionBox.currentClientX - state.selectionBox.startClientX);
       const movedY = Math.abs(state.selectionBox.currentClientY - state.selectionBox.startClientY);
       if (movedX < 4 && movedY < 4) {
-        setSelected([]);
+        setSelected(state.selectionBox.shiftKey ? state.selectionBox.selectionBefore : []);
       } else {
-        setSelected(selectionHitCards(normalizedSelectionRect(state.selectionBox)).map(card => card.id));
+        setSelected(lassoSelectionIds(state.selectionBox, normalizedSelectionRect(state.selectionBox)));
       }
       state.selectionBox = null;
       interactionController.end(event.pointerId);
@@ -2721,24 +2741,22 @@ function setupCanvasEvents() {
     stopDragAutoPan();
     state.drag = null;
     state.pan = null;
+    state.alignmentGuides = [];
     interactionController.end(event.pointerId);
-    renderAlignmentGuides([]);
-    scheduleInteractionFrame({ dock: true, minimap: true });
+    scheduleInteractionFrame({ guides: true, dock: true, minimap: true });
   });
 
-  window.addEventListener("pointercancel", () => {
-    if (state.drag || state.pan) save();
-    els.viewport.classList.remove("is-panning");
-    stopDragAutoPan();
-    state.pendingDrag = null;
-    state.drag = null;
-    state.pan = null;
-    state.selectionBox = null;
-    state.connecting = null;
-    interactionController.cancel();
-    renderAlignmentGuides([]);
-    scheduleInteractionFrame({ edges: true, selection: true, dock: true, minimap: true });
+  window.addEventListener("pointercancel", event => {
+    if (interactionController.value.mode === "idle") return;
+    if (!isActiveInteractionPointer(event)) return;
+    cancelCanvasInteraction();
   });
+
+  window.addEventListener("lostpointercapture", event => {
+    if (interactionController.value.mode === "idle") return;
+    if (!isActiveInteractionPointer(event)) return;
+    cancelCanvasInteraction();
+  }, true);
 }
 
 function addEdge(from, to) {
@@ -2816,7 +2834,7 @@ function setupCanvasManagement() {
   });
   document.getElementById("minimapCanvas").addEventListener("pointerdown", minimapFocus);
   els.stage.addEventListener("pointerdown", event => {
-    if (event.target.closest(".canvas-group-title")) event.stopPropagation();
+    if (event.button === 0 && event.target.closest(".canvas-group-title")) event.stopPropagation();
   });
   els.stage.addEventListener("click", event => {
     const action = event.target.closest("[data-group-action]");
@@ -3832,7 +3850,9 @@ function createNodeFromConnection(type) {
 }
 
 function setupConnectionCreateMenu() {
-  els.connectionCreateMenu.addEventListener("pointerdown", event => event.stopPropagation());
+  els.connectionCreateMenu.addEventListener("pointerdown", event => {
+    if (event.button === 0) event.stopPropagation();
+  });
   els.connectionCreateMenu.addEventListener("click", event => {
     event.stopPropagation();
     const button = event.target.closest("button[data-chain-create]");

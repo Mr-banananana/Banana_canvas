@@ -19,13 +19,22 @@ $cardSelectBlock = [regex]::Match($app, 'const cardEl = event\.target\.closest\(
 $blankSelectionBlock = [regex]::Match($app, 'setSelected\(\[\]\);[\s\S]*?state\.selectionBox = \{[\s\S]*?scheduleInteractionFrame\(\{ selection: true, dock: true[^}]*\}\);').Value
 $lassoMoveBlock = [regex]::Match($app, 'if \(state\.selectionBox\) \{[\s\S]*?currentClientY = event\.clientY;[\s\S]*?scheduleInteractionFrame\(\{ selection: true, dock: true[^}]*\}\);').Value
 $lassoUpBlock = [regex]::Match($app, 'if \(state\.selectionBox\) \{[\s\S]*?state\.selectionBox = null;[\s\S]*?scheduleInteractionFrame\(\{ selection: true, dock: true[^}]*\}\);').Value
-$pointerCancelBlock = [regex]::Match($app, 'window\.addEventListener\("pointercancel", \(\) => \{[\s\S]*?scheduleInteractionFrame\(\{ edges: true, selection: true, dock: true[^}]*\}\);').Value
+$pointerMoveBlock = [regex]::Match($app, 'window\.addEventListener\("pointermove", event => \{[\s\S]*?\n\s*\}\);').Value
+$pointerUpBlock = [regex]::Match($app, 'window\.addEventListener\("pointerup", event => \{[\s\S]*?\n\s*\}\);').Value
+$pointerCancelBlock = [regex]::Match($app, 'window\.addEventListener\("pointercancel", (?:\(\)|event) => \{[\s\S]*?\n\s*\}\);').Value
 $pendingDragBlock = [regex]::Match($app, 'function beginPendingCardDrag\(card, event\) \{[\s\S]*?\n\}').Value
 $commitPendingDragBlock = [regex]::Match($app, 'function commitPendingDrag\(event\) \{[\s\S]*?\n\}').Value
 $pendingClickBlock = [regex]::Match($app, 'function commitPendingCardClick\(event\) \{[\s\S]*?\n\}').Value
 $duplicateBlock = [regex]::Match($app, 'function duplicateSelectedNodes\(\) \{[\s\S]*?\n\}').Value
 $escapeBlock = [regex]::Match($app, 'if \(event\.key === "Escape"\) \{[\s\S]*?return;[\s\S]*?\n\s*\}').Value
 $cancelInteractionBlock = [regex]::Match($app, 'function cancelCanvasInteraction\(\) \{[\s\S]*?\n\}').Value
+$lassoSelectionBlock = [regex]::Match($app, 'function lassoSelectionIds\(box, rect\) \{[\s\S]*?\n\}').Value
+$updateDraggedCardsBlock = [regex]::Match($app, 'function updateDraggedCards\(clientX, clientY, altKey = false\) \{[\s\S]*?\n\}').Value
+$flushInteractionBlock = [regex]::Match($app, 'function flushInteractionFrame\(flags\) \{[\s\S]*?\n\}').Value
+$connectionPointerBlock = [regex]::Match($app, 'const output = event\.target\.closest\("\.port\.output"\);[\s\S]*?scheduleInteractionFrame\(\{ edges: true \}\);').Value
+$stagePointerGuardBlock = [regex]::Match($app, 'els\.stage\.addEventListener\("pointerdown", event => \{[\s\S]*?\n\s*\}\);').Value
+$connectionMenuPointerBlock = [regex]::Match($app, 'els\.connectionCreateMenu\.addEventListener\("pointerdown", event =>[\s\S]*?\);').Value
+$minimapFocusBlock = [regex]::Match($app, 'function minimapFocus\(event\) \{[\s\S]*?\n\}').Value
 
 $checks = @(
   @{
@@ -53,7 +62,8 @@ $checks = @(
       $blankSelectionBlock -match 'scheduleInteractionFrame\(\{ selection: true, dock: true, minimap: true \}\);' -and
       $lassoMoveBlock -match 'scheduleInteractionFrame\(\{ selection: true, dock: true, minimap: true \}\);' -and
       $lassoUpBlock -match 'scheduleInteractionFrame\(\{ selection: true, dock: true, minimap: true \}\);' -and
-      $pointerCancelBlock -match 'scheduleInteractionFrame\(\{ edges: true, selection: true, dock: true, minimap: true \}\);'
+      $pointerCancelBlock -match 'cancelCanvasInteraction\(\)' -and
+      $cancelInteractionBlock -match 'scheduleInteractionFrame\(\{[^}]*selection: true[^}]*minimap: true[^}]*\}\);'
   },
   @{
     Name = 'drag begins only after a four screen pixel threshold'
@@ -68,6 +78,44 @@ $checks = @(
     Pass = $app -match 'function toggleSelected\(' -and
       $pendingDragBlock -match 'event\.shiftKey' -and
       $pendingClickBlock -match 'pending\.shiftKey[\s\S]*?toggleSelected\('
+  },
+  @{
+    Name = 'shift lasso toggles hits relative to the prior selection'
+    Pass = $lassoSelectionBlock -match 'new Set\(box\.selectionBefore' -and
+      $lassoSelectionBlock -match 'selected\.has\(id\)[\s\S]*?selected\.delete\(id\)[\s\S]*?selected\.add\(id\)' -and
+      $app -match 'shiftKey:\s*event\.shiftKey' -and
+      $lassoUpBlock -match 'state\.selectionBox\.shiftKey[\s\S]*?state\.selectionBox\.selectionBefore'
+  },
+  @{
+    Name = 'active pointer modes ignore unrelated pointers and release capture'
+    Pass = $app -match 'function isActiveInteractionPointer\(event\)' -and
+      $pointerMoveBlock -match 'if \(!isActiveInteractionPointer\(event\)\) return;' -and
+      $pointerUpBlock -match 'if \(!isActiveInteractionPointer\(event\)\) return;' -and
+      $pointerCancelBlock -match 'if \(!isActiveInteractionPointer\(event\)\) return;' -and
+      $connectionPointerBlock -match 'setPointerCapture\(event\.pointerId\)' -and
+      $app -match 'lostpointercapture[\s\S]*?cancelCanvasInteraction\(\)'
+  },
+  @{
+    Name = 'pointer cancellation rolls back without saving partial state'
+    Pass = $pointerCancelBlock -match 'cancelCanvasInteraction\(\)' -and
+      $pointerCancelBlock -notmatch 'save\(' -and
+      $commitPendingDragBlock -match 'viewX:\s*state\.viewport\.x' -and
+      $cancelInteractionBlock -match 'state\.viewport\.x\s*=\s*state\.drag\.viewX'
+  },
+  @{
+    Name = 'middle pan propagates through canvas controls and overlays'
+    Pass = $stagePointerGuardBlock -match 'event\.button === 0[\s\S]*?stopPropagation\(\)' -and
+      $connectionMenuPointerBlock -match 'event\.button === 0[\s\S]*?stopPropagation\(\)' -and
+      $minimapFocusBlock -match 'if \(event\.button !== 0\) return;[\s\S]*?event\.stopPropagation\(\)'
+  },
+  @{
+    Name = 'drag frames reuse indexed cards and schedule guide DOM updates'
+    Pass = $commitPendingDragBlock -match 'const cardsById = new Map\(' -and
+      $commitPendingDragBlock -match 'origins:[\s\S]*?card,' -and
+      $updateDraggedCardsBlock -notmatch 'findCard\(' -and
+      $updateDraggedCardsBlock -match 'state\.alignmentGuides = snapped\.guides' -and
+      $updateDraggedCardsBlock -notmatch 'renderAlignmentGuides\(' -and
+      $flushInteractionBlock -match 'dirty\.guides[\s\S]*?renderAlignmentGuides\(state\.alignmentGuides\)'
   },
   @{
     Name = 'card dragging uses one snapped group delta'
@@ -102,7 +150,8 @@ $checks = @(
       $escapeBlock -match 'cancelCanvasInteraction\(\)' -and
       $cancelInteractionBlock -match 'interactionController\.cancel\(\)' -and
       $cancelInteractionBlock -match 'state\.pendingDrag\s*=\s*null' -and
-      $cancelInteractionBlock -match 'renderAlignmentGuides\(\[\]\)'
+      $cancelInteractionBlock -match 'state\.alignmentGuides\s*=\s*\[\]' -and
+      $cancelInteractionBlock -match 'guides: true'
   },
   @{
     Name = 'wheel interactions use incremental frames without render'
