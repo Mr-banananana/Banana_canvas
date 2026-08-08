@@ -165,6 +165,7 @@ const interactionController = CanvasEngine.createInteractionController();
 const debouncedLocalSave = CanvasEngine.createDebouncedCommit(commitScheduledLocalSave, 300);
 let pendingInteractionFlags = {};
 let renderedInspectorSelectionId = null;
+let performanceFrameTelemetry = null;
 let canvasLibrary = {
   schema: CANVAS_LIBRARY_SCHEMA,
   activeCanvasId: "canvas_default",
@@ -2796,6 +2797,7 @@ function commitPendingDrag(event) {
     origins: dragCards.map(card => ({ card, id: card.id, x: card.x, y: card.y }))
   };
   state.pendingDrag = null;
+  if (performanceFixtureMode()) startCanvasPerformanceFrameTelemetry();
   updateDraggedCards(event.clientX, event.clientY, event.altKey);
   startDragAutoPan();
   return true;
@@ -4107,6 +4109,60 @@ function requestedPerformanceFixtureCount() {
 
 function performanceFixtureMode() {
   return requestedPerformanceFixtureCount() > 0;
+}
+
+function startCanvasPerformanceFrameTelemetry() {
+  if (!performanceFixtureMode()) return false;
+  const fixtureCount = requestedPerformanceFixtureCount();
+  const root = document.documentElement;
+  if (!root || !fixtureCount) return false;
+
+  if (performanceFrameTelemetry) {
+    if (performanceFrameTelemetry.frameId) cancelAnimationFrame(performanceFrameTelemetry.frameId);
+    if (performanceFrameTelemetry.timeoutId) clearTimeout(performanceFrameTelemetry.timeoutId);
+  }
+
+  const telemetry = { samples: [], previousTimestamp: null, frameId: 0, timeoutId: 0 };
+  performanceFrameTelemetry = telemetry;
+  root.setAttribute("data-canvas-performance-fixture-count", String(fixtureCount));
+  root.setAttribute("data-canvas-performance-frame-status", "sampling");
+  root.setAttribute("data-canvas-performance-frame-sample-count", "0");
+  root.setAttribute("data-canvas-performance-frame-median-ms", "");
+  root.setAttribute("data-canvas-performance-frame-p95-ms", "");
+
+  const finish = status => {
+    if (performanceFrameTelemetry !== telemetry) return;
+    if (telemetry.frameId) cancelAnimationFrame(telemetry.frameId);
+    if (telemetry.timeoutId) clearTimeout(telemetry.timeoutId);
+    const sorted = [...telemetry.samples].sort((a, b) => a - b);
+    const midpoint = Math.floor(sorted.length / 2);
+    const median = sorted.length
+      ? (sorted.length % 2 ? sorted[midpoint] : (sorted[midpoint - 1] + sorted[midpoint]) / 2)
+      : null;
+    const p95Index = Math.max(0, Math.ceil(sorted.length * 0.95) - 1);
+    const p95 = sorted.length ? sorted[p95Index] : null;
+    root.setAttribute("data-canvas-performance-frame-status", status);
+    root.setAttribute("data-canvas-performance-frame-sample-count", String(sorted.length));
+    root.setAttribute("data-canvas-performance-frame-median-ms", median === null ? "" : median.toFixed(2));
+    root.setAttribute("data-canvas-performance-frame-p95-ms", p95 === null ? "" : p95.toFixed(2));
+    performanceFrameTelemetry = null;
+  };
+
+  const sample = timestamp => {
+    if (performanceFrameTelemetry !== telemetry) return;
+    telemetry.frameId = 0;
+    if (telemetry.previousTimestamp !== null) telemetry.samples.push(timestamp - telemetry.previousTimestamp);
+    telemetry.previousTimestamp = timestamp;
+    if (telemetry.samples.length === 120) {
+      finish("complete");
+      return;
+    }
+    telemetry.frameId = requestAnimationFrame(sample);
+  };
+
+  telemetry.timeoutId = setTimeout(() => finish("timeout"), 10000);
+  telemetry.frameId = requestAnimationFrame(sample);
+  return true;
 }
 
 function installPerformanceFixture() {

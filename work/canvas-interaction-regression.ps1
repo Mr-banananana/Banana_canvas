@@ -82,6 +82,7 @@ $performanceFixtureCountBlock = [regex]::Match($app, 'function requestedPerforma
 $performanceFixtureModeBlock = [regex]::Match($app, 'function performanceFixtureMode\(\) \{[\s\S]*?\n\}').Value
 $installPerformanceFixtureBlock = [regex]::Match($app, 'function installPerformanceFixture\(\) \{[\s\S]*?\n\}').Value
 $setupPerformanceFixtureBlock = [regex]::Match($app, 'function setupPerformanceFixture\(\) \{[\s\S]*?\n\}').Value
+$performanceFrameTelemetryBlock = [regex]::Match($app, 'function startCanvasPerformanceFrameTelemetry\(\) \{[\s\S]*?\n\}').Value
 $bootBlock = [regex]::Match($app, 'function boot\(\) \{[\s\S]*?\n\}').Value
 $performanceFixturePass = $false
 if ($fixture) {
@@ -181,6 +182,64 @@ assert(renders === 1);
   & node -e 'eval(process.env.CANVAS_PERFORMANCE_INSTALL_PROBE)'
   $performanceFixtureInstallPass = $LASTEXITCODE -eq 0
   Remove-Item Env:\CANVAS_PERFORMANCE_INSTALL_PROBE
+}
+$performanceFrameTelemetryPass = $false
+if ($performanceFrameTelemetryBlock) {
+  $performanceFrameTelemetryProbe = @"
+function assert(condition) { if (!condition) process.exit(1); }
+const attributes = new Map();
+const document = { documentElement: { setAttribute(name, value) { attributes.set(name, String(value)); } } };
+const frames = [];
+const cancelledFrames = [];
+const timers = new Map();
+let nextFrameId = 0;
+let nextTimerId = 0;
+let fixtureMode = false;
+let fixtureCount = 100;
+let performanceFrameTelemetry = null;
+function performanceFixtureMode() { return fixtureMode; }
+function requestedPerformanceFixtureCount() { return fixtureCount; }
+function requestAnimationFrame(callback) { frames.push({ id: ++nextFrameId, callback }); return nextFrameId; }
+function cancelAnimationFrame(id) { cancelledFrames.push(id); }
+function setTimeout(callback, delay) { const id = ++nextTimerId; timers.set(id, { callback, delay }); return id; }
+function clearTimeout(id) { timers.delete(id); }
+$performanceFrameTelemetryBlock
+
+assert(startCanvasPerformanceFrameTelemetry() === false);
+assert(attributes.size === 0 && frames.length === 0 && timers.size === 0);
+
+fixtureMode = true;
+assert(startCanvasPerformanceFrameTelemetry() === true);
+assert(attributes.get("data-canvas-performance-frame-status") === "sampling");
+assert(attributes.get("data-canvas-performance-frame-sample-count") === "0");
+assert(attributes.get("data-canvas-performance-fixture-count") === "100");
+assert([...timers.values()][0].delay === 10000);
+for (let index = 0; index <= 120; index += 1) {
+  const frame = frames.shift();
+  assert(Boolean(frame));
+  frame.callback(index * 16);
+}
+assert(attributes.get("data-canvas-performance-frame-status") === "complete");
+assert(attributes.get("data-canvas-performance-frame-sample-count") === "120");
+assert(attributes.get("data-canvas-performance-frame-median-ms") === "16.00");
+assert(attributes.get("data-canvas-performance-frame-p95-ms") === "16.00");
+assert(frames.length === 0 && timers.size === 0);
+
+fixtureCount = 300;
+assert(startCanvasPerformanceFrameTelemetry() === true);
+for (let index = 0; index <= 4; index += 1) frames.shift().callback(index * 20);
+const timeout = [...timers.values()][0];
+timeout.callback();
+assert(attributes.get("data-canvas-performance-frame-status") === "timeout");
+assert(attributes.get("data-canvas-performance-frame-sample-count") === "4");
+assert(attributes.get("data-canvas-performance-frame-median-ms") === "20.00");
+assert(attributes.get("data-canvas-performance-frame-p95-ms") === "20.00");
+assert(attributes.get("data-canvas-performance-fixture-count") === "300");
+"@
+  $env:CANVAS_PERFORMANCE_FRAME_PROBE = $performanceFrameTelemetryProbe
+  & node -e 'eval(process.env.CANVAS_PERFORMANCE_FRAME_PROBE)'
+  $performanceFrameTelemetryPass = $LASTEXITCODE -eq 0
+  Remove-Item Env:\CANVAS_PERFORMANCE_FRAME_PROBE
 }
 $performanceFixtureServerPass = $false
 $performanceFixtureServerProbe = @'
@@ -572,7 +631,7 @@ $checks = @(
       $html -match 'window\.__CANVAS_PERFORMANCE_FIXTURE__ = \{ count:' -and
       $html -match 'window\.canvasPerformanceFixtureReady = false' -and
       $html -match 'document\.createElement\("script"\)' -and
-      $html -match '/_dev/canvas-performance-fixture\.js\?v=canvas-interactions-3'
+      $html -match '/_dev/canvas-performance-fixture\.js\?v=canvas-interactions-4'
   },
   @{
     Name = 'performance fixture installs for both script races without persistence'
@@ -587,9 +646,22 @@ $checks = @(
       $bootBlock -match 'if \(!fixtureMode\)[\s\S]*?seedDemo\(\)[\s\S]*?save\(\)'
   },
   @{
+    Name = 'fixture drag telemetry records exactly 120 frame intervals in DOM attributes'
+    Pass = $performanceFrameTelemetryPass -and
+      $commitPendingDragBlock -match 'state\.drag = \{[\s\S]*?startCanvasPerformanceFrameTelemetry\(\)' -and
+      $performanceFrameTelemetryBlock -match 'samples\.length === 120' -and
+      $performanceFrameTelemetryBlock -match '10000' -and
+      $performanceFrameTelemetryBlock -match 'data-canvas-performance-frame-status' -and
+      $performanceFrameTelemetryBlock -match 'data-canvas-performance-frame-sample-count' -and
+      $performanceFrameTelemetryBlock -match 'data-canvas-performance-frame-median-ms' -and
+      $performanceFrameTelemetryBlock -match 'data-canvas-performance-frame-p95-ms' -and
+      $performanceFrameTelemetryBlock -match 'data-canvas-performance-fixture-count' -and
+      $performanceFrameTelemetryBlock -notmatch '\brender\(|\bsave\(|localStorage|historyPast|window\.'
+  },
+  @{
     Name = 'canvas engine and app scripts are cache busted together'
-    Pass = $html -match 'canvas-engine\.js\?v=canvas-interactions-3' -and
-      $html -match 'app\.js\?v=canvas-interactions-3'
+    Pass = $html -match 'canvas-engine\.js\?v=canvas-interactions-4' -and
+      $html -match 'app\.js\?v=canvas-interactions-4'
   },
   @{
     Name = 'README documents optimized canvas interactions'
@@ -1434,7 +1506,7 @@ $checks = @(
   },
   @{
     Name = 'prompt fixes are cache-busted in the served page'
-    Pass = $html -match 'app\.js\?v=canvas-interactions-3' -and $html -match 'styles\.css\?v=canvas-controls-9'
+    Pass = $html -match 'app\.js\?v=canvas-interactions-4' -and $html -match 'styles\.css\?v=canvas-controls-9'
   },
   @{
     Name = 'server exposes a deployment health endpoint'
