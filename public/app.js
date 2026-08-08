@@ -361,6 +361,7 @@ function showPersistenceError() {
 }
 
 function clearPersistenceError() {
+  if (pendingLocalSavePayload || pendingSettingsPayload) return;
   if (els.saveState.textContent.startsWith("本地保存失败")) els.saveState.textContent = "本地保存已恢复";
   els.saveState.classList.remove("error");
 }
@@ -379,7 +380,7 @@ function persistCanvasLibrary(payload) {
   }
 }
 
-function captureLocalSavePayload() {
+function captureLocalSavePayload(canvasId = canvasLibrary.activeCanvasId) {
   if (!canvasLibrary.canvases.length) {
     const canvas = createCanvasRecord("未命名画布", { id: canvasLibrary.activeCanvasId });
     canvasLibrary.canvases = [canvas];
@@ -391,7 +392,8 @@ function captureLocalSavePayload() {
   if (index >= 0) canvasLibrary.canvases[index] = current;
   else canvasLibrary.canvases.push(current);
   return {
-    canvasId: current.id,
+    canvasId,
+    activeCanvasId: current.id,
     snapshot: canvasSnapshot(),
     library: cloneData({
       schema: CANVAS_LIBRARY_SCHEMA,
@@ -442,7 +444,7 @@ function mutateCanvasById(canvasId, mutate, renderActive = render) {
     save();
   } else {
     target.updatedAt = Date.now();
-    scheduleLocalSave();
+    scheduleLocalSave(canvasId);
   }
   return result;
 }
@@ -644,36 +646,42 @@ function cancelHistoryTransaction() {
 
 function commitLocalState(payload) {
   if (!payload) return;
-  if (payload.canvasId === canvasLibrary.activeCanvasId) {
+  if (payload.activeCanvasId === canvasLibrary.activeCanvasId) {
     const nextSnapshot = cloneData(payload.snapshot);
     if (!state.historyRestoring && lastCanvasSnapshot && snapshotKey(nextSnapshot) !== snapshotKey(lastCanvasSnapshot)) pushHistorySnapshot(lastCanvasSnapshot);
     lastCanvasSnapshot = nextSnapshot;
   }
-  if (persistCanvasLibrary(payload)) els.saveState.textContent = `已保存 ${new Date().toLocaleTimeString()}`;
+  if (persistCanvasLibrary(payload) && !pendingSettingsPayload) els.saveState.textContent = `已保存 ${new Date().toLocaleTimeString()}`;
   renderHistoryMenu();
 }
 
-function commitScheduledLocalSave(payload) {
-  if (state.historyTransaction?.label === "wheel" && payload.canvasId === canvasLibrary.activeCanvasId) commitHistoryTransaction();
-  commitLocalState(payload);
+function commitScheduledLocalSave(marker) {
+  const canvasId = marker?.canvasId || canvasLibrary.activeCanvasId;
+  if (state.historyTransaction && state.historyTransaction.label !== "wheel") {
+    debouncedLocalSave({ canvasId });
+    return;
+  }
+  if (state.historyTransaction?.label === "wheel") commitHistoryTransaction();
+  commitLocalState(captureLocalSavePayload(canvasId));
 }
 
-function scheduleLocalSave() {
-  debouncedLocalSave(captureLocalSavePayload());
+function scheduleLocalSave(canvasId = canvasLibrary.activeCanvasId) {
+  debouncedLocalSave({ canvasId });
 }
 
 function flushLocalSave() {
   if (state.historyTransaction) commitHistoryTransaction();
-  debouncedLocalSave(captureLocalSavePayload());
-  debouncedLocalSave.flush();
+  debouncedLocalSave.cancel();
+  commitLocalState(captureLocalSavePayload(canvasLibrary.activeCanvasId));
+  retryPendingSettings();
 }
 
 function save() {
   flushLocalSave();
 }
 
-function persistSettings() {
-  pendingSettingsPayload = JSON.stringify(settings);
+function retryPendingSettings() {
+  if (!pendingSettingsPayload) return true;
   try {
     localStorage.setItem(SETTINGS_KEY, pendingSettingsPayload);
     pendingSettingsPayload = null;
@@ -683,6 +691,11 @@ function persistSettings() {
     showPersistenceError(error);
     return false;
   }
+}
+
+function persistSettings() {
+  pendingSettingsPayload = JSON.stringify(settings);
+  return retryPendingSettings();
 }
 
 function normalizeCanvasState() {

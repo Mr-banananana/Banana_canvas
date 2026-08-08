@@ -62,9 +62,14 @@ $importJsonBlock = [regex]::Match($app, 'function importJson\(event\) \{[\s\S]*?
 $setWorkspaceModeBlock = [regex]::Match($app, 'function setWorkspaceMode\(mode\) \{[\s\S]*?\n\}').Value
 $postJsonBlock = [regex]::Match($app, 'async function postJson\(url, body\) \{[\s\S]*?\n\}').Value
 $flushLocalSaveBlock = [regex]::Match($app, 'function flushLocalSave\(\) \{[\s\S]*?\n\}').Value
-$captureLocalSavePayloadBlock = [regex]::Match($app, 'function captureLocalSavePayload\(\) \{[\s\S]*?\n\}').Value
-$commitScheduledLocalSaveBlock = [regex]::Match($app, 'function commitScheduledLocalSave\(payload\) \{[\s\S]*?\n\}').Value
+$captureLocalSavePayloadBlock = [regex]::Match($app, 'function captureLocalSavePayload\([^)]*\) \{[\s\S]*?\n\}').Value
+$commitScheduledLocalSaveBlock = [regex]::Match($app, 'function commitScheduledLocalSave\([^)]*\) \{[\s\S]*?\n\}').Value
+$scheduleLocalSaveBlock = [regex]::Match($app, 'function scheduleLocalSave\([^)]*\) \{[\s\S]*?\n\}').Value
 $persistCanvasLibraryBlock = [regex]::Match($app, 'function persistCanvasLibrary\(payload\) \{[\s\S]*?\n\}').Value
+$showPersistenceErrorBlock = [regex]::Match($app, 'function showPersistenceError\([^)]*\) \{[\s\S]*?\n\}').Value
+$clearPersistenceErrorBlock = [regex]::Match($app, 'function clearPersistenceError\(\) \{[\s\S]*?\n\}').Value
+$retryPendingSettingsBlock = [regex]::Match($app, 'function retryPendingSettings\(\) \{[\s\S]*?\n\}').Value
+$persistSettingsBlock = [regex]::Match($app, 'function persistSettings\(\) \{[\s\S]*?\n\}').Value
 $canvasStateForBlock = [regex]::Match($app, 'function canvasStateFor\(canvasId\) \{[\s\S]*?\n\}').Value
 $mutateCanvasByIdBlock = [regex]::Match($app, 'function mutateCanvasById\(canvasId, mutate, renderActive = render\) \{[\s\S]*?\n\}').Value
 $settleHistoryBlock = [regex]::Match($app, 'function settleHistoryInteractionForRestore\(\) \{[\s\S]*?\n\}').Value
@@ -146,12 +151,13 @@ assert(state.historyPast.length === 2 && state.historyTransaction === null);
   Remove-Item Env:\HISTORY_TRANSACTION_PROBE
 }
 
-$immutableSaveFixturePass = $false
-if ($captureLocalSavePayloadBlock -and $commitScheduledLocalSaveBlock) {
+$lazySaveFixturePass = $false
+if ($captureLocalSavePayloadBlock -and $commitScheduledLocalSaveBlock -and $scheduleLocalSaveBlock) {
   $immutableSaveProbe = @"
-function cloneData(value) { return JSON.parse(JSON.stringify(value)); }
+let cloneCalls = 0;
+function cloneData(value) { cloneCalls += 1; return JSON.parse(JSON.stringify(value)); }
 const CANVAS_LIBRARY_SCHEMA = "schema-v1";
-const state = { cards: [{ id: "a-card", value: "captured" }], groups: [], historyTransaction: { label: "drag" } };
+const state = { cards: [{ id: "a-card", value: "live" }], groups: [], historyTransaction: null };
 let canvasLibrary = {
   schema: "schema-v1",
   activeCanvasId: "canvas-a",
@@ -160,26 +166,62 @@ let canvasLibrary = {
     { id: "canvas-b", cards: [{ id: "b-card", value: "untouched" }] }
   ]
 };
-function captureCurrentCanvas() { return { id: "canvas-a", cards: cloneData(state.cards) }; }
-function canvasSnapshot() { return { cards: cloneData(state.cards) }; }
+let captureCalls = 0;
+function captureCurrentCanvas() {
+  captureCalls += 1;
+  return { id: canvasLibrary.activeCanvasId, cards: JSON.parse(JSON.stringify(state.cards)) };
+}
+function canvasSnapshot() { return { cards: JSON.parse(JSON.stringify(state.cards)) }; }
 function normalizeCanvasGroup(group) { return group; }
 const committed = [];
-function commitLocalState(payload) { committed.push(cloneData(payload)); }
+function commitLocalState(payload) { committed.push(JSON.parse(JSON.stringify(payload))); }
+let queuedMarker = null;
+let scheduleCalls = 0;
+function debouncedLocalSave(marker) { scheduleCalls += 1; queuedMarker = marker; }
+let transactionCommits = 0;
+function commitHistoryTransaction() { transactionCommits += 1; state.historyTransaction = null; }
 function assert(condition) { if (!condition) process.exit(1); }
 $captureLocalSavePayloadBlock
 $commitScheduledLocalSaveBlock
-const payload = captureLocalSavePayload();
-state.cards[0].value = "mutated-after-schedule";
-canvasLibrary.activeCanvasId = "canvas-b";
-commitScheduledLocalSave(payload);
-assert(committed.length === 1);
-assert(committed[0].canvasId === "canvas-a");
-assert(committed[0].snapshot.cards[0].value === "captured");
-assert(committed[0].library.canvases[1].cards[0].value === "untouched");
+$scheduleLocalSaveBlock
+
+scheduleLocalSave("canvas-a");
+scheduleLocalSave("canvas-a");
+scheduleLocalSave("canvas-a");
+assert(captureCalls === 0 && cloneCalls === 0 && scheduleCalls === 3);
+assert(queuedMarker.canvasId === "canvas-a" && Object.keys(queuedMarker).length === 1);
+
+state.historyTransaction = { label: "wheel" };
+commitScheduledLocalSave(queuedMarker);
+assert(transactionCommits === 1 && captureCalls === 1 && cloneCalls === 1);
+assert(committed.length === 1 && committed[0].snapshot.cards[0].value === "live");
+
+captureCalls = 0;
+cloneCalls = 0;
+queuedMarker = null;
+state.historyTransaction = { label: "drag" };
+commitScheduledLocalSave({ canvasId: "canvas-a" });
+assert(captureCalls === 0 && cloneCalls === 0 && committed.length === 1);
+assert(queuedMarker.canvasId === "canvas-a");
+state.historyTransaction = null;
+commitScheduledLocalSave(queuedMarker);
+assert(captureCalls === 1 && cloneCalls === 1 && committed.length === 2);
+
+captureCalls = 0;
+cloneCalls = 0;
+canvasLibrary.canvases[1].cards[0].value = "origin-result";
+scheduleLocalSave("canvas-b");
+assert(captureCalls === 0 && cloneCalls === 0);
+commitScheduledLocalSave(queuedMarker);
+const inactivePayload = committed[2];
+assert(captureCalls === 1 && cloneCalls === 1);
+assert(inactivePayload.canvasId === "canvas-b" && inactivePayload.activeCanvasId === "canvas-a");
+assert(inactivePayload.snapshot.cards[0].value === "live");
+assert(inactivePayload.library.canvases[1].cards[0].value === "origin-result");
 "@
   $env:IMMUTABLE_SAVE_PROBE = $immutableSaveProbe
   & node -e 'eval(process.env.IMMUTABLE_SAVE_PROBE)'
-  $immutableSaveFixturePass = $LASTEXITCODE -eq 0
+  $lazySaveFixturePass = $LASTEXITCODE -eq 0
   Remove-Item Env:\IMMUTABLE_SAVE_PROBE
 }
 
@@ -196,10 +238,10 @@ const canvasLibrary = {
 };
 let renders = 0;
 let immediateSaves = 0;
-let scheduledSaves = 0;
+const scheduledCanvasIds = [];
 function render() { renders += 1; }
 function save() { immediateSaves += 1; }
-function scheduleLocalSave() { scheduledSaves += 1; }
+function scheduleLocalSave(canvasId) { scheduledCanvasIds.push(canvasId); }
 function assert(condition) { if (!condition) process.exit(1); }
 $canvasStateForBlock
 $mutateCanvasByIdBlock
@@ -209,9 +251,10 @@ mutateCanvasById("canvas-origin", target => {
 });
 assert(state.cards.length === 1 && state.cards[0].status === "idle");
 assert(canvasLibrary.canvases[1].cards.length === 2);
-assert(renders === 0 && immediateSaves === 0 && scheduledSaves === 1);
+assert(renders === 0 && immediateSaves === 0 && scheduledCanvasIds.length === 1);
+assert(scheduledCanvasIds[0] === "canvas-origin");
 mutateCanvasById("canvas-active", target => { target.cards[0].status = "done"; });
-assert(renders === 1 && immediateSaves === 1 && scheduledSaves === 1);
+assert(renders === 1 && immediateSaves === 1 && scheduledCanvasIds.length === 1);
 "@
   $env:CANVAS_OWNERSHIP_PROBE = $canvasOwnershipProbe
   & node -e 'eval(process.env.CANVAS_OWNERSHIP_PROBE)'
@@ -245,6 +288,49 @@ assert(pendingLocalSavePayload === null && clearedErrors === 1 && writes === 1);
   & node -e 'eval(process.env.PERSISTENCE_FAILURE_PROBE)'
   $persistenceFailureFixturePass = $LASTEXITCODE -eq 0
   Remove-Item Env:\PERSISTENCE_FAILURE_PROBE
+}
+
+$settingsRetryFixturePass = $false
+if ($showPersistenceErrorBlock -and $clearPersistenceErrorBlock -and $retryPendingSettingsBlock -and $persistSettingsBlock) {
+  $settingsRetryProbe = @"
+const SETTINGS_KEY = "settings";
+const settings = { apiKey: "retained" };
+let pendingLocalSavePayload = null;
+let pendingSettingsPayload = null;
+let shouldThrow = true;
+let writes = 0;
+const els = {
+  saveState: {
+    textContent: "",
+    classList: {
+      values: new Set(),
+      add(value) { this.values.add(value); },
+      remove(value) { this.values.delete(value); },
+      contains(value) { return this.values.has(value); }
+    }
+  }
+};
+const localStorage = { setItem() { if (shouldThrow) throw new Error("quota"); writes += 1; } };
+function assert(condition) { if (!condition) process.exit(1); }
+$showPersistenceErrorBlock
+$clearPersistenceErrorBlock
+$retryPendingSettingsBlock
+$persistSettingsBlock
+assert(persistSettings() === false);
+assert(pendingSettingsPayload === JSON.stringify(settings));
+assert(els.saveState.classList.contains("error"));
+pendingLocalSavePayload = { library: {} };
+shouldThrow = false;
+assert(retryPendingSettings() === true && writes === 1 && pendingSettingsPayload === null);
+assert(els.saveState.classList.contains("error"));
+pendingLocalSavePayload = null;
+clearPersistenceError();
+assert(!els.saveState.classList.contains("error"));
+"@
+  $env:SETTINGS_RETRY_PROBE = $settingsRetryProbe
+  & node -e 'eval(process.env.SETTINGS_RETRY_PROBE)'
+  $settingsRetryFixturePass = $LASTEXITCODE -eq 0
+  Remove-Item Env:\SETTINGS_RETRY_PROBE
 }
 
 $historySettlementFixturePass = $false
@@ -284,8 +370,10 @@ assert(state.historyRestoring === false);
 
 $checks = @(
   @{
-    Name = 'debounced saves use immutable canvas-owned payloads'
-    Pass = $immutableSaveFixturePass -and $commitScheduledLocalSaveBlock -notmatch 'else\s+return|label !=='
+    Name = 'debounced saves capture one immutable canvas-owned payload at commit time'
+    Pass = $lazySaveFixturePass -and
+      $scheduleLocalSaveBlock -notmatch 'captureLocalSavePayload|cloneData' -and
+      $commitScheduledLocalSaveBlock -match 'captureLocalSavePayload'
   },
   @{
     Name = 'async canvas mutations remain owned by their origin canvas'
@@ -307,8 +395,7 @@ $checks = @(
   },
   @{
     Name = 'local storage failures retain retryable state and surface one status'
-    Pass = $persistenceFailureFixturePass -and
-      $app -match 'function persistSettings\(\)\s*\{[\s\S]*?try\s*\{[\s\S]*?localStorage\.setItem[\s\S]*?catch' -and
+    Pass = $persistenceFailureFixturePass -and $settingsRetryFixturePass -and
       $app -match '本地保存失败'
   },
   @{
@@ -339,7 +426,7 @@ $checks = @(
     Pass = $app -match 'function scheduleLocalSave\(' -and
       $app -match 'function flushLocalSave\(' -and
       $app -match 'createDebouncedCommit\([^,]+,\s*300\)' -and
-      $flushLocalSaveBlock -match 'debouncedLocalSave\([^)]*\)[\s\S]*?debouncedLocalSave\.flush\(\)' -and
+      $flushLocalSaveBlock -match 'debouncedLocalSave\.cancel\(\)[\s\S]*?captureLocalSavePayload\(canvasLibrary\.activeCanvasId\)' -and
       $pointerMoveBlock -notmatch '\bsave\(|persistCanvasLibrary\(|localStorage\.setItem' -and
       $wheelBlock -notmatch '\bsave\(|persistCanvasLibrary\(|localStorage\.setItem'
   },
