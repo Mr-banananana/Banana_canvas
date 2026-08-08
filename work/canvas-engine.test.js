@@ -3,10 +3,18 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 
 const frameCallbacks = [];
+const timers = new Map();
+let nextTimerId = 0;
 const context = {
   window: {},
-  setTimeout,
-  clearTimeout,
+  setTimeout(callback, delay) {
+    const id = ++nextTimerId;
+    timers.set(id, { callback, delay });
+    return id;
+  },
+  clearTimeout(id) {
+    timers.delete(id);
+  },
   requestAnimationFrame(callback) {
     frameCallbacks.push(callback);
     return frameCallbacks.length;
@@ -92,9 +100,22 @@ assert.deepEqual(
 );
 
 const committed = [];
-const commit = engine.createDebouncedCommit(value => committed.push(value), 10);
+const commit = engine.createDebouncedCommit(value => committed.push(value), 300);
 commit("draft");
 commit("final");
 assert.deepEqual(committed, []);
-commit.flush();
+assert.equal(timers.size, 1);
+assert.equal([...timers.values()][0].delay, 300);
+const idleCommit = [...timers.values()][0].callback;
+idleCommit();
 assert.deepEqual(committed, ["final"]);
+
+commit("next");
+commit.flush();
+assert.deepEqual(committed, ["final", "next"]);
+assert.equal(timers.size, 0);
+
+commit("cancelled");
+commit.cancel();
+assert.equal(timers.size, 0);
+assert.deepEqual(committed, ["final", "next"]);

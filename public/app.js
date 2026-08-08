@@ -117,6 +117,7 @@ const state = {
   pendingUploadConnection: null,
   historyPast: [],
   historyFuture: [],
+  historyTransaction: null,
   historyRestoring: false,
   suppressNextClick: false,
   workspaceMode: "canvas",
@@ -154,12 +155,12 @@ const state = {
   }
 };
 
-let saveTimer = null;
 let lastCanvasSnapshot = null;
 const cardNodes = new Map();
 const edgeNodes = new Map();
 const edgeHitNodes = new Map();
 const interactionController = CanvasEngine.createInteractionController();
+const debouncedLocalSave = CanvasEngine.createDebouncedCommit(commitScheduledLocalSave, 300);
 let pendingInteractionFlags = {};
 let renderedInspectorSelectionId = null;
 let canvasLibrary = {
@@ -244,7 +245,8 @@ function canvasSnapshot() {
   return {
     cards: cloneData(state.cards),
     edges: cloneData(state.edges),
-    groups: cloneData(state.groups)
+    groups: cloneData(state.groups),
+    viewport: cloneData(state.viewport)
   };
 }
 
@@ -272,7 +274,12 @@ function normalizeCanvasSnapshots(snapshots) {
     state: {
       cards: Array.isArray(snapshot.state?.cards) ? snapshot.state.cards : [],
       edges: Array.isArray(snapshot.state?.edges) ? snapshot.state.edges : [],
-      groups: Array.isArray(snapshot.state?.groups) ? snapshot.state.groups : []
+      groups: Array.isArray(snapshot.state?.groups) ? snapshot.state.groups : [],
+      viewport: snapshot.state?.viewport ? {
+        x: Number(snapshot.state.viewport.x ?? 300),
+        y: Number(snapshot.state.viewport.y ?? 160),
+        scale: Math.min(2.5, Math.max(0.25, Number(snapshot.state.viewport.scale || 1)))
+      } : undefined
     }
   }));
 }
@@ -376,6 +383,7 @@ function applyCanvasRecord(record) {
   state.productVideoWorkspace = canvas.productVideoWorkspace;
   state.historyPast = [];
   state.historyFuture = [];
+  state.historyTransaction = null;
   state.historyRestoring = false;
   setSelected([]);
   normalizeCanvasState();
@@ -411,7 +419,7 @@ function switchCanvas(id) {
     closeCanvasLibrary();
     return;
   }
-  save();
+  flushLocalSave();
   canvasLibrary.activeCanvasId = target.id;
   applyCanvasRecord(target);
   closeCanvasLibrary();
@@ -425,7 +433,7 @@ function switchCanvas(id) {
 }
 
 function createNewCanvas() {
-  save();
+  flushLocalSave();
   const canvas = createCanvasRecord(`新画布 ${canvasLibrary.canvases.length + 1}`, { id: uid("canvas") });
   canvasLibrary.canvases.push(canvas);
   canvasLibrary.activeCanvasId = canvas.id;
@@ -450,6 +458,7 @@ function renameActiveCanvas() {
 function deleteActiveCanvas() {
   const active = activeCanvasRecord();
   if (!active || !window.confirm(`删除“${active.name}”？此操作不可撤销。`)) return;
+  flushLocalSave();
   const index = canvasLibrary.canvases.findIndex(canvas => canvas.id === active.id);
   canvasLibrary.canvases.splice(index, 1);
   if (!canvasLibrary.canvases.length) {
@@ -545,23 +554,75 @@ function normalizeCard(card) {
   if (migrateCommerceDefaults && card.size === "1024x768") card.size = sizeForImage(card.aspect, card.imageResolution);
 }
 
-function save() {
-  if (saveTimer) {
-    clearTimeout(saveTimer);
-    saveTimer = null;
+function pushHistorySnapshot(snapshot) {
+  state.historyPast.push(cloneData(snapshot));
+  state.historyPast = state.historyPast.slice(-50);
+  state.historyFuture = [];
+}
+
+function beginHistoryTransaction(label) {
+  if (state.historyTransaction) {
+    if (state.historyTransaction.label === label) return true;
+    commitHistoryTransaction();
   }
+  const snapshot = canvasSnapshot();
+  state.historyTransaction = { label, snapshot, key: snapshotKey(snapshot) };
+  return true;
+}
+
+function commitHistoryTransaction() {
+  const transaction = state.historyTransaction;
+  if (!transaction) return false;
+  state.historyTransaction = null;
+  const nextSnapshot = canvasSnapshot();
+  if (snapshotKey(nextSnapshot) === transaction.key) {
+    lastCanvasSnapshot = nextSnapshot;
+    return false;
+  }
+  if (!state.historyRestoring) pushHistorySnapshot(transaction.snapshot);
+  lastCanvasSnapshot = nextSnapshot;
+  renderHistoryMenu();
+  return true;
+}
+
+function cancelHistoryTransaction() {
+  state.historyTransaction = null;
+}
+
+function commitLocalState() {
   state.groups = state.groups.map(normalizeCanvasGroup).filter(group => group.memberIds.length);
   const nextSnapshot = canvasSnapshot();
-  if (!state.historyRestoring && lastCanvasSnapshot && snapshotKey(nextSnapshot) !== snapshotKey(lastCanvasSnapshot)) {
-    state.historyPast.push(cloneData(lastCanvasSnapshot));
-    state.historyPast = state.historyPast.slice(-50);
-    state.historyFuture = [];
-  }
+  if (!state.historyRestoring && !state.historyTransaction && lastCanvasSnapshot && snapshotKey(nextSnapshot) !== snapshotKey(lastCanvasSnapshot)) pushHistorySnapshot(lastCanvasSnapshot);
   lastCanvasSnapshot = nextSnapshot;
   persistCanvasLibrary();
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   els.saveState.textContent = `已保存 ${new Date().toLocaleTimeString()}`;
   renderHistoryMenu();
+}
+
+function commitScheduledLocalSave() {
+  if (state.historyTransaction) {
+    if (state.historyTransaction.label === "wheel") commitHistoryTransaction();
+    else return;
+  }
+  commitLocalState();
+}
+
+function scheduleLocalSave() {
+  debouncedLocalSave();
+}
+
+function flushLocalSave() {
+  if (state.historyTransaction) commitHistoryTransaction();
+  debouncedLocalSave();
+  debouncedLocalSave.flush();
+}
+
+function save() {
+  flushLocalSave();
+}
+
+function persistSettings() {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
 }
 
 function normalizeCanvasState() {
@@ -575,6 +636,7 @@ function restoreCanvasState(snapshot) {
   state.cards = cloneData(snapshot?.cards || []);
   state.edges = cloneData(snapshot?.edges || []);
   state.groups = cloneData(snapshot?.groups || []);
+  if (snapshot?.viewport) state.viewport = cloneData(snapshot.viewport);
   normalizeCanvasState();
   setSelected([]);
 }
@@ -716,11 +778,6 @@ function migrateLegacyCommerceNodes() {
 }
 
 
-function scheduleSave() {
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(save, 300);
-}
-
 function syncSettingsForm() {
   els.provider.value = settings.provider;
   els.imageModel.value = settings.imageModel;
@@ -747,7 +804,7 @@ function collectSettings() {
   settings.customBody = els.customBody.value;
   settings.customResultPath = els.customResultPath.value.trim();
   setApiKey(els.apiKey.value);
-  save();
+  persistSettings();
 }
 
 function findCard(id) {
@@ -1323,6 +1380,7 @@ function beginMinimapPan(event) {
   const nextViewport = minimapPointToViewport(event.clientX, event.clientY);
   if (!canvas || !bounds || !nextViewport) return;
   if (!interactionController.begin("minimap-panning", { pointerId: event.pointerId })) return;
+  beginHistoryTransaction("minimap");
   const rect = canvas.getBoundingClientRect();
   const canvasX = (event.clientX - rect.left) * bounds.width / rect.width;
   const canvasY = (event.clientY - rect.top) * bounds.height / rect.height;
@@ -1362,7 +1420,7 @@ function endMinimapPan(event) {
   interactionController.end(event.pointerId);
   canvas?.classList.remove("is-navigating");
   if (canvas?.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
-  save();
+  if (commitHistoryTransaction()) scheduleLocalSave();
 }
 
 function handleMinimapKeydown(event) {
@@ -1884,6 +1942,7 @@ async function pollProductVideo(apiKey) {
 }
 
 function setWorkspaceMode(mode) {
+  flushLocalSave();
   state.workspaceMode = ["commerce", "product-video"].includes(mode) ? mode : "canvas";
   els.viewport.classList.toggle("hidden", state.workspaceMode !== "canvas");
   els.commerceWorkspace.classList.toggle("hidden", state.workspaceMode !== "commerce");
@@ -2336,7 +2395,7 @@ function updateSelected(patch, options = {}) {
   } else {
     render();
   }
-  if (options.deferSave) scheduleSave();
+  if (options.deferSave) scheduleLocalSave();
   else save();
 }
 
@@ -2451,12 +2510,12 @@ function setupToolbar() {
     }
     if (state.commerceWorkspace.promptMode === "auto") state.commerceWorkspace.promptStatus = event.target.value.trim() ? "done" : "idle";
     state.commerceWorkspace.error = "";
-    scheduleSave();
+    scheduleLocalSave();
   });
   [els.commerceWorkspaceAspect, els.commerceWorkspaceQuality, els.commerceWorkspaceResolution].forEach(input => {
     input.addEventListener("change", event => {
       state.commerceWorkspace[{ commerceWorkspaceAspect: "aspect", commerceWorkspaceQuality: "quality", commerceWorkspaceResolution: "resolution" }[event.target.id]] = event.target.value;
-      scheduleSave();
+      scheduleLocalSave();
     });
   });
   els.commerceWorkspacePromptButton.addEventListener("click", generateCommerceWorkspacePrompt);
@@ -2485,7 +2544,7 @@ function setupToolbar() {
   els.productVideoPrompt.addEventListener("input", event => {
     state.productVideoWorkspace.prompt = event.target.value;
     state.productVideoWorkspace.error = "";
-    scheduleSave();
+    scheduleLocalSave();
   });
   [els.productVideoAspect, els.productVideoResolution, els.productVideoDuration, els.productVideoFps, els.productVideoAudio].forEach(input => {
     input.addEventListener("change", event => {
@@ -2497,7 +2556,7 @@ function setupToolbar() {
         productVideoAudio: "generateAudio"
       }[event.target.id];
       state.productVideoWorkspace[key] = ["duration", "fps"].includes(key) ? Number(event.target.value) : key === "generateAudio" ? event.target.value === "true" : event.target.value;
-      scheduleSave();
+      scheduleLocalSave();
     });
   });
   els.productVideoGenerate.addEventListener("click", generateProductVideo);
@@ -2567,6 +2626,7 @@ function cardsInteractionBounds(cards) {
 
 function beginPendingCardDrag(card, event) {
   if (!interactionController.begin("pending-card-drag", { pointerId: event.pointerId, cardId: card.id })) return false;
+  beginHistoryTransaction("drag");
   state.pendingDrag = {
     id: card.id,
     pointerId: event.pointerId,
@@ -2599,6 +2659,7 @@ function commitPendingDrag(event) {
   interactionController.end(event.pointerId);
   if (!bounds || !interactionController.begin("dragging", { pointerId: event.pointerId, cardId: pending.id })) {
     state.pendingDrag = null;
+    cancelHistoryTransaction();
     return false;
   }
   state.drag = {
@@ -2632,6 +2693,7 @@ function commitPendingCardClick(event) {
   else selectSingle(pending.id);
   state.pendingDrag = null;
   interactionController.end(event.pointerId);
+  cancelHistoryTransaction();
   scheduleInteractionFrame({ selection: true, dock: true, minimap: true });
   return true;
 }
@@ -2770,6 +2832,7 @@ function cancelCanvasInteraction() {
   state.connecting = null;
   state.alignmentGuides = [];
   interactionController.cancel();
+  cancelHistoryTransaction();
   els.viewport.classList.remove("is-panning");
   document.getElementById("minimapCanvas")?.classList.remove("is-navigating");
   scheduleInteractionFrame({ viewport: true, cards: true, edges: true, selection: true, guides: true, dock: true, minimap: true });
@@ -2781,6 +2844,7 @@ function setupCanvasEvents() {
     const isZoomGesture = event.ctrlKey;
     if (!isZoomGesture && event.target.closest(".node-control-dock")) return;
     event.preventDefault();
+    beginHistoryTransaction("wheel");
     const multiplier = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? els.viewport.clientHeight : 1;
     if (isZoomGesture) {
       const rect = els.viewport.getBoundingClientRect();
@@ -2795,13 +2859,14 @@ function setupCanvasEvents() {
       state.viewport.y -= Number(event.deltaY || 0) * multiplier;
     }
     scheduleInteractionFrame({ viewport: true, dock: true, minimap: true });
-    save();
+    scheduleLocalSave();
   }, { passive: false });
 
   els.viewport.addEventListener("pointerdown", event => {
     if (event.button === 1) {
       event.preventDefault();
       if (!interactionController.begin("panning", { pointerId: event.pointerId })) return;
+      beginHistoryTransaction("pan");
       hideContextMenu();
       hideConnectionCreateMenu();
       els.viewport.classList.add("is-panning");
@@ -2990,7 +3055,8 @@ function setupCanvasEvents() {
       scheduleInteractionFrame({ selection: true, dock: true, minimap: true });
       return;
     }
-    if (state.drag || state.pan) save();
+    const completedGesture = Boolean(state.drag || state.pan);
+    if (completedGesture && commitHistoryTransaction()) scheduleLocalSave();
     els.viewport.classList.remove("is-panning");
     stopDragAutoPan();
     state.drag = null;
@@ -3105,7 +3171,7 @@ function setupCanvasManagement() {
     const group = state.groups.find(item => item.id === input.dataset.groupTitle);
     if (!group) return;
     group.name = input.value.slice(0, 32);
-    scheduleSave();
+    scheduleLocalSave();
   });
   window.addEventListener("click", event => {
     if (!event.target.closest(".canvas-tools-menu") && !event.target.closest("#openCanvasTools")) toolsMenu.classList.add("hidden");
@@ -3137,7 +3203,7 @@ function fitView() {
 }
 
 function exportJson() {
-  save();
+  flushLocalSave();
   const blob = new Blob([JSON.stringify({
     schema: CANVAS_LIBRARY_SCHEMA,
     activeCanvasId: canvasLibrary.activeCanvasId,
@@ -3155,6 +3221,7 @@ function exportJson() {
 function importJson(event) {
   const file = event.target.files?.[0];
   if (!file) return;
+  flushLocalSave();
   const reader = new FileReader();
   reader.onload = () => {
     try {
@@ -3201,6 +3268,7 @@ function setupSettings() {
 }
 
 async function postJson(url, body) {
+  flushLocalSave();
   const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.error) {
@@ -4247,6 +4315,8 @@ function setupKeyboardShortcuts() {
   });
 }
 function boot() {
+  window.addEventListener("beforeunload", flushLocalSave);
+  window.addEventListener("pagehide", flushLocalSave);
   load();
   setupToolbar();
   setupCanvasEvents();

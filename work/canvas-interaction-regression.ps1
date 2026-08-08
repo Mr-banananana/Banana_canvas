@@ -50,6 +50,18 @@ $setConnectionTargetBlock = [regex]::Match($app, 'function setConnectionTarget\(
 $selectEdgeBlock = [regex]::Match($app, 'function selectEdge\(id\) \{[\s\S]*?\n\}').Value
 $edgeKeyBlock = [regex]::Match($app, 'function handleEdgeKeydown\(event\) \{[\s\S]*?\n\}').Value
 $minimapKeyBlock = [regex]::Match($app, 'function handleMinimapKeydown\(event\) \{[\s\S]*?\n\}').Value
+$beginHistoryTransactionBlock = [regex]::Match($app, 'function beginHistoryTransaction\(label\) \{[\s\S]*?\n\}').Value
+$commitHistoryTransactionBlock = [regex]::Match($app, 'function commitHistoryTransaction\(\) \{[\s\S]*?\n\}').Value
+$cancelHistoryTransactionBlock = [regex]::Match($app, 'function cancelHistoryTransaction\(\) \{[\s\S]*?\n\}').Value
+$beginPendingCardDragBlock = [regex]::Match($app, 'function beginPendingCardDrag\(card, event\) \{[\s\S]*?\n\}').Value
+$switchCanvasBlock = [regex]::Match($app, 'function switchCanvas\(id\) \{[\s\S]*?\n\}').Value
+$createNewCanvasBlock = [regex]::Match($app, 'function createNewCanvas\(\) \{[\s\S]*?\n\}').Value
+$deleteActiveCanvasBlock = [regex]::Match($app, 'function deleteActiveCanvas\(\) \{[\s\S]*?\n\}').Value
+$exportJsonBlock = [regex]::Match($app, 'function exportJson\(\) \{[\s\S]*?\n\}').Value
+$importJsonBlock = [regex]::Match($app, 'function importJson\(event\) \{[\s\S]*?\n\}').Value
+$setWorkspaceModeBlock = [regex]::Match($app, 'function setWorkspaceMode\(mode\) \{[\s\S]*?\n\}').Value
+$postJsonBlock = [regex]::Match($app, 'async function postJson\(url, body\) \{[\s\S]*?\n\}').Value
+$flushLocalSaveBlock = [regex]::Match($app, 'function flushLocalSave\(\) \{[\s\S]*?\n\}').Value
 $edgeNormalizationFixturePass = $false
 if ($normalizeEdgesBlock) {
   $edgeNormalizationProbe = @"
@@ -77,7 +89,99 @@ if (new Set(ids).size !== ids.length) process.exit(1);
   Remove-Item Env:\EDGE_NORMALIZATION_PROBE
 }
 
+$historyTransactionFixturePass = $false
+if ($beginHistoryTransactionBlock -and $commitHistoryTransactionBlock -and $cancelHistoryTransactionBlock) {
+  $historyTransactionProbe = @"
+function cloneData(value) { return JSON.parse(JSON.stringify(value)); }
+function snapshotKey(snapshot) { return JSON.stringify(snapshot || {}); }
+function canvasSnapshot() { return { cards: cloneData(state.cards), edges: [], groups: [], viewport: cloneData(state.viewport) }; }
+function renderHistoryMenu() {}
+function pushHistorySnapshot(snapshot) {
+  state.historyPast.push(cloneData(snapshot));
+  state.historyPast = state.historyPast.slice(-50);
+  state.historyFuture = [];
+}
+function assert(condition) { if (!condition) process.exit(1); }
+const state = {
+  cards: [{ id: "card_1", x: 0, y: 0 }],
+  viewport: { x: 300, y: 160, scale: 1 },
+  historyTransaction: null,
+  historyPast: [],
+  historyFuture: [{ cards: [] }],
+  historyRestoring: false
+};
+let lastCanvasSnapshot = canvasSnapshot();
+$beginHistoryTransactionBlock
+$commitHistoryTransactionBlock
+$cancelHistoryTransactionBlock
+assert(beginHistoryTransaction("drag") === true);
+state.cards[0].x = 24;
+assert(commitHistoryTransaction() === true);
+assert(state.historyPast.length === 1 && state.historyPast[0].cards[0].x === 0);
+assert(state.historyFuture.length === 0);
+assert(commitHistoryTransaction() === false && state.historyPast.length === 1);
+assert(beginHistoryTransaction("pan") === true);
+assert(commitHistoryTransaction() === false && state.historyPast.length === 1);
+assert(beginHistoryTransaction("minimap") === true);
+state.viewport.x = 120;
+assert(commitHistoryTransaction() === true && state.historyPast.length === 2);
+assert(beginHistoryTransaction("drag") === true);
+state.cards[0].x = 48;
+state.cards[0].x = 24;
+cancelHistoryTransaction();
+assert(state.historyPast.length === 2 && state.historyTransaction === null);
+"@
+  $env:HISTORY_TRANSACTION_PROBE = $historyTransactionProbe
+  & node -e 'eval(process.env.HISTORY_TRANSACTION_PROBE)'
+  $historyTransactionFixturePass = $LASTEXITCODE -eq 0
+  Remove-Item Env:\HISTORY_TRANSACTION_PROBE
+}
+
 $checks = @(
+  @{
+    Name = 'gesture history commits once per completed interaction'
+    Pass = $historyTransactionFixturePass -and
+      $beginPendingCardDragBlock -match 'beginHistoryTransaction\("drag"\)' -and
+      $pointerDownBlock -match 'beginHistoryTransaction\("pan"\)' -and
+      $beginMinimapBlock -match 'beginHistoryTransaction\("minimap"\)' -and
+      $pointerUpBlock -match 'commitHistoryTransaction\(\)[\s\S]*?scheduleLocalSave\(\)' -and
+      $endMinimapBlock -match 'commitHistoryTransaction\(\)[\s\S]*?scheduleLocalSave\(\)'
+  },
+  @{
+    Name = 'click no-op and cancelled gestures add no history'
+    Pass = $pendingClickBlock -match 'cancelHistoryTransaction\(\)' -and
+      $cancelInteractionBlock -match 'cancelHistoryTransaction\(\)' -and
+      $commitHistoryTransactionBlock -match 'snapshotKey\([^)]+\)\s*===\s*transaction\.key[\s\S]*?return false'
+  },
+  @{
+    Name = 'wheel bursts commit one transaction after idle'
+    Pass = $wheelBlock -match 'beginHistoryTransaction\("wheel"\)' -and
+      $wheelBlock -match 'scheduleLocalSave\(\)' -and
+      $wheelBlock -notmatch '\bsave\(\)' -and
+      $app -match 'createDebouncedCommit\([^,]+,\s*300\)' -and
+      $app -match 'historyTransaction(?:\?\.)?\.label === "wheel"[\s\S]*?commitHistoryTransaction\(\)'
+  },
+  @{
+    Name = 'local canvas saving is debounced during navigation'
+    Pass = $app -match 'function scheduleLocalSave\(' -and
+      $app -match 'function flushLocalSave\(' -and
+      $app -match 'createDebouncedCommit\([^,]+,\s*300\)' -and
+      $flushLocalSaveBlock -match 'debouncedLocalSave\(\)[\s\S]*?debouncedLocalSave\.flush\(\)' -and
+      $pointerMoveBlock -notmatch '\bsave\(|persistCanvasLibrary\(|localStorage\.setItem' -and
+      $wheelBlock -notmatch '\bsave\(|persistCanvasLibrary\(|localStorage\.setItem'
+  },
+  @{
+    Name = 'pending local saves flush at state and async boundaries'
+    Pass = $switchCanvasBlock -match 'flushLocalSave\(\)' -and
+      $createNewCanvasBlock -match 'flushLocalSave\(\)' -and
+      $deleteActiveCanvasBlock -match 'flushLocalSave\(\)' -and
+      $exportJsonBlock -match 'flushLocalSave\(\)' -and
+      $importJsonBlock -match 'flushLocalSave\(\)' -and
+      $setWorkspaceModeBlock -match 'flushLocalSave\(\)' -and
+      $postJsonBlock -match 'flushLocalSave\(\)' -and
+      $app -match 'addEventListener\("beforeunload", flushLocalSave\)' -and
+      $app -match 'addEventListener\("pagehide", flushLocalSave\)'
+  },
   @{
     Name = 'pointer movement uses incremental interaction frames'
     Pass = $app -match 'function scheduleInteractionFrame\(' -and
