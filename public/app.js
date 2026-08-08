@@ -2472,7 +2472,7 @@ function setupCanvasEvents() {
       };
       cardEl.setPointerCapture(event.pointerId);
       startDragAutoPan();
-      scheduleInteractionFrame({ selection: true, dock: true });
+      scheduleInteractionFrame({ selection: true, dock: true, minimap: true });
       return;
     }
 
@@ -2488,7 +2488,7 @@ function setupCanvasEvents() {
       currentClientY: event.clientY
     };
     els.viewport.setPointerCapture(event.pointerId);
-    scheduleInteractionFrame({ selection: true, dock: true });
+    scheduleInteractionFrame({ selection: true, dock: true, minimap: true });
   });
 
   window.addEventListener("pointermove", event => {
@@ -2509,7 +2509,7 @@ function setupCanvasEvents() {
       state.selectionBox.currentWorld = point;
       state.selectionBox.currentClientX = event.clientX;
       state.selectionBox.currentClientY = event.clientY;
-      scheduleInteractionFrame({ selection: true, dock: true });
+      scheduleInteractionFrame({ selection: true, dock: true, minimap: true });
       return;
     }
     if (state.pan) {
@@ -2564,7 +2564,7 @@ function setupCanvasEvents() {
         setSelected(selectionHitCards(normalizedSelectionRect(state.selectionBox)).map(card => card.id));
       }
       state.selectionBox = null;
-      scheduleInteractionFrame({ selection: true, dock: true });
+      scheduleInteractionFrame({ selection: true, dock: true, minimap: true });
       return;
     }
     if (state.drag || state.pan) save();
@@ -2583,7 +2583,7 @@ function setupCanvasEvents() {
     state.pan = null;
     state.selectionBox = null;
     state.connecting = null;
-    scheduleInteractionFrame({ edges: true, selection: true, dock: true });
+    scheduleInteractionFrame({ edges: true, selection: true, dock: true, minimap: true });
   });
 }
 

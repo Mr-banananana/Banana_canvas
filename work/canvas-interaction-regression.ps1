@@ -15,6 +15,11 @@ $assetGrid = [regex]::Match($styles, '\.commerce-asset-grid\s*\{[^}]*\}').Value
 $pointerDownBlock = [regex]::Match($app, 'els\.viewport\.addEventListener\("pointerdown", event => \{[\s\S]*?if \(event\.button === 2\)').Value
 $wheelBlock = [regex]::Match($app, 'els\.viewport\.addEventListener\("wheel", event => \{[\s\S]*?\}, \{ passive: false \}\);').Value
 $minimapBlock = [regex]::Match($app, 'function renderMinimap\(\) \{[\s\S]*?\n\}').Value
+$cardSelectBlock = [regex]::Match($app, 'const cardEl = event\.target\.closest\("\.card"\);[\s\S]*?scheduleInteractionFrame\(\{ selection: true, dock: true[^}]*\}\);').Value
+$blankSelectionBlock = [regex]::Match($app, 'setSelected\(\[\]\);[\s\S]*?state\.selectionBox = \{[\s\S]*?scheduleInteractionFrame\(\{ selection: true, dock: true[^}]*\}\);').Value
+$lassoMoveBlock = [regex]::Match($app, 'if \(state\.selectionBox\) \{[\s\S]*?currentClientY = event\.clientY;[\s\S]*?scheduleInteractionFrame\(\{ selection: true, dock: true[^}]*\}\);').Value
+$lassoUpBlock = [regex]::Match($app, 'if \(state\.selectionBox\) \{[\s\S]*?state\.selectionBox = null;[\s\S]*?scheduleInteractionFrame\(\{ selection: true, dock: true[^}]*\}\);').Value
+$pointerCancelBlock = [regex]::Match($app, 'window\.addEventListener\("pointercancel", \(\) => \{[\s\S]*?scheduleInteractionFrame\(\{ edges: true, selection: true, dock: true[^}]*\}\);').Value
 
 $checks = @(
   @{
@@ -35,6 +40,14 @@ $checks = @(
     Pass = $app -match 'if \(dirty\.selection\) \{[\s\S]*?syncInteractionInspector\(\);' -and
       $app -match 'function syncInteractionInspector\(\)' -and
       $app -match 'renderInspector\(\);'
+  },
+  @{
+    Name = 'selection-changing interaction frames invalidate the minimap'
+    Pass = $cardSelectBlock -match 'scheduleInteractionFrame\(\{ selection: true, dock: true, minimap: true \}\);' -and
+      $blankSelectionBlock -match 'scheduleInteractionFrame\(\{ selection: true, dock: true, minimap: true \}\);' -and
+      $lassoMoveBlock -match 'scheduleInteractionFrame\(\{ selection: true, dock: true, minimap: true \}\);' -and
+      $lassoUpBlock -match 'scheduleInteractionFrame\(\{ selection: true, dock: true, minimap: true \}\);' -and
+      $pointerCancelBlock -match 'scheduleInteractionFrame\(\{ edges: true, selection: true, dock: true, minimap: true \}\);'
   },
   @{
     Name = 'wheel interactions use incremental frames without render'
