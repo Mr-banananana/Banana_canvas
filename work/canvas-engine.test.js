@@ -119,3 +119,16 @@ commit("cancelled");
 commit.cancel();
 assert.equal(timers.size, 0);
 assert.deepEqual(committed, ["final", "next"]);
+
+let retryAttempts = 0;
+const retryingCommit = engine.createDebouncedCommit(value => {
+  retryAttempts += 1;
+  if (retryAttempts === 1) throw new Error("storage unavailable");
+  committed.push(value);
+}, 300);
+retryingCommit("retry-payload");
+assert.throws(() => retryingCommit.flush(), /storage unavailable/);
+assert.equal(retryAttempts, 1);
+retryingCommit.flush();
+assert.equal(retryAttempts, 2);
+assert.deepEqual(committed, ["final", "next", "retry-payload"]);

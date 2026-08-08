@@ -149,7 +149,15 @@
       const value = pending;
       pending = undefined;
       hasPending = false;
-      commit(value);
+      try {
+        commit(value);
+      } catch (error) {
+        if (!hasPending) {
+          pending = value;
+          hasPending = true;
+        }
+        throw error;
+      }
     }
 
     function debounced(value) {

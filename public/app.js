@@ -156,6 +156,8 @@ const state = {
 };
 
 let lastCanvasSnapshot = null;
+let pendingLocalSavePayload = null;
+let pendingSettingsPayload = null;
 const cardNodes = new Map();
 const edgeNodes = new Map();
 const edgeHitNodes = new Map();
@@ -353,22 +355,50 @@ function captureCurrentCanvas() {
   });
 }
 
-function persistCanvasLibrary() {
+function showPersistenceError() {
+  els.saveState.textContent = "本地保存失败，将在下次更改时重试。";
+  els.saveState.classList.add("error");
+}
+
+function clearPersistenceError() {
+  if (els.saveState.textContent.startsWith("本地保存失败")) els.saveState.textContent = "本地保存已恢复";
+  els.saveState.classList.remove("error");
+}
+
+function persistCanvasLibrary(payload) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload.library));
+    pendingLocalSavePayload = null;
+    clearPersistenceError();
+    renderCanvasLibrary();
+    return true;
+  } catch (error) {
+    pendingLocalSavePayload = payload;
+    showPersistenceError(error);
+    return false;
+  }
+}
+
+function captureLocalSavePayload() {
   if (!canvasLibrary.canvases.length) {
     const canvas = createCanvasRecord("未命名画布", { id: canvasLibrary.activeCanvasId });
     canvasLibrary.canvases = [canvas];
     canvasLibrary.activeCanvasId = canvas.id;
   }
+  state.groups = state.groups.map(normalizeCanvasGroup).filter(group => group.memberIds.length);
   const current = captureCurrentCanvas();
   const index = canvasLibrary.canvases.findIndex(canvas => canvas.id === canvasLibrary.activeCanvasId);
   if (index >= 0) canvasLibrary.canvases[index] = current;
   else canvasLibrary.canvases.push(current);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    schema: CANVAS_LIBRARY_SCHEMA,
-    activeCanvasId: canvasLibrary.activeCanvasId,
-    canvases: canvasLibrary.canvases
-  }));
-  renderCanvasLibrary();
+  return {
+    canvasId: current.id,
+    snapshot: canvasSnapshot(),
+    library: cloneData({
+      schema: CANVAS_LIBRARY_SCHEMA,
+      activeCanvasId: canvasLibrary.activeCanvasId,
+      canvases: canvasLibrary.canvases
+    })
+  };
 }
 
 function applyCanvasRecord(record) {
@@ -392,6 +422,29 @@ function applyCanvasRecord(record) {
 
 function activeCanvasRecord() {
   return canvasLibrary.canvases.find(canvas => canvas.id === canvasLibrary.activeCanvasId) || null;
+}
+
+function canvasStateFor(canvasId) {
+  if (canvasId === canvasLibrary.activeCanvasId) return state;
+  return canvasLibrary.canvases.find(canvas => canvas.id === canvasId) || null;
+}
+
+function findCanvasCard(canvasId, cardId) {
+  return canvasStateFor(canvasId)?.cards?.find(card => card.id === cardId) || null;
+}
+
+function mutateCanvasById(canvasId, mutate, renderActive = render) {
+  const target = canvasStateFor(canvasId);
+  if (!target) return null;
+  const result = mutate(target);
+  if (canvasId === canvasLibrary.activeCanvasId) {
+    renderActive();
+    save();
+  } else {
+    target.updatedAt = Date.now();
+    scheduleLocalSave();
+  }
+  return result;
 }
 
 function renderCanvasLibrary() {
@@ -589,31 +642,29 @@ function cancelHistoryTransaction() {
   state.historyTransaction = null;
 }
 
-function commitLocalState() {
-  state.groups = state.groups.map(normalizeCanvasGroup).filter(group => group.memberIds.length);
-  const nextSnapshot = canvasSnapshot();
-  if (!state.historyRestoring && !state.historyTransaction && lastCanvasSnapshot && snapshotKey(nextSnapshot) !== snapshotKey(lastCanvasSnapshot)) pushHistorySnapshot(lastCanvasSnapshot);
-  lastCanvasSnapshot = nextSnapshot;
-  persistCanvasLibrary();
-  els.saveState.textContent = `已保存 ${new Date().toLocaleTimeString()}`;
+function commitLocalState(payload) {
+  if (!payload) return;
+  if (payload.canvasId === canvasLibrary.activeCanvasId) {
+    const nextSnapshot = cloneData(payload.snapshot);
+    if (!state.historyRestoring && lastCanvasSnapshot && snapshotKey(nextSnapshot) !== snapshotKey(lastCanvasSnapshot)) pushHistorySnapshot(lastCanvasSnapshot);
+    lastCanvasSnapshot = nextSnapshot;
+  }
+  if (persistCanvasLibrary(payload)) els.saveState.textContent = `已保存 ${new Date().toLocaleTimeString()}`;
   renderHistoryMenu();
 }
 
-function commitScheduledLocalSave() {
-  if (state.historyTransaction) {
-    if (state.historyTransaction.label === "wheel") commitHistoryTransaction();
-    else return;
-  }
-  commitLocalState();
+function commitScheduledLocalSave(payload) {
+  if (state.historyTransaction?.label === "wheel" && payload.canvasId === canvasLibrary.activeCanvasId) commitHistoryTransaction();
+  commitLocalState(payload);
 }
 
 function scheduleLocalSave() {
-  debouncedLocalSave();
+  debouncedLocalSave(captureLocalSavePayload());
 }
 
 function flushLocalSave() {
   if (state.historyTransaction) commitHistoryTransaction();
-  debouncedLocalSave();
+  debouncedLocalSave(captureLocalSavePayload());
   debouncedLocalSave.flush();
 }
 
@@ -622,7 +673,16 @@ function save() {
 }
 
 function persistSettings() {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  pendingSettingsPayload = JSON.stringify(settings);
+  try {
+    localStorage.setItem(SETTINGS_KEY, pendingSettingsPayload);
+    pendingSettingsPayload = null;
+    clearPersistenceError();
+    return true;
+  } catch (error) {
+    showPersistenceError(error);
+    return false;
+  }
 }
 
 function normalizeCanvasState() {
@@ -641,24 +701,37 @@ function restoreCanvasState(snapshot) {
   setSelected([]);
 }
 
+function settleHistoryInteractionForRestore() {
+  if (interactionController.value.mode !== "idle") cancelCanvasInteraction();
+  flushLocalSave();
+}
+
 function undoCanvas() {
+  settleHistoryInteractionForRestore();
   if (!state.historyPast.length) return;
   state.historyFuture.unshift(canvasSnapshot());
-  restoreCanvasState(state.historyPast.pop());
   state.historyRestoring = true;
-  render();
-  save();
-  state.historyRestoring = false;
+  try {
+    restoreCanvasState(state.historyPast.pop());
+    render();
+    save();
+  } finally {
+    state.historyRestoring = false;
+  }
 }
 
 function redoCanvas() {
+  settleHistoryInteractionForRestore();
   if (!state.historyFuture.length) return;
   state.historyPast.push(canvasSnapshot());
-  restoreCanvasState(state.historyFuture.shift());
   state.historyRestoring = true;
-  render();
-  save();
-  state.historyRestoring = false;
+  try {
+    restoreCanvasState(state.historyFuture.shift());
+    render();
+    save();
+  } finally {
+    state.historyRestoring = false;
+  }
 }
 
 function createCanvasSnapshot() {
@@ -674,13 +747,17 @@ function createCanvasSnapshot() {
 }
 
 function restoreNamedCanvasSnapshot(id) {
+  settleHistoryInteractionForRestore();
   const snapshot = state.canvasSnapshots.find(item => item.id === id);
   if (!snapshot) return;
-  restoreCanvasState(snapshot.state);
   state.historyRestoring = true;
-  render();
-  save();
-  state.historyRestoring = false;
+  try {
+    restoreCanvasState(snapshot.state);
+    render();
+    save();
+  } finally {
+    state.historyRestoring = false;
+  }
 }
 
 function renderHistoryMenu() {
@@ -1441,11 +1518,11 @@ function handleMinimapKeydown(event) {
   save();
 }
 
-function createCard(type, options = {}) {
+function createCardRecord(type, options = {}, targetState = state) {
   const def = NODE_DEFS[type] || NODE_DEFS.text;
-  const center = viewportCenter();
-  const defaultX = center.x - def.w / 2 + state.cards.length * 18;
-  const defaultY = center.y - def.h / 2 + state.cards.length * 18;
+  const center = targetState === state ? viewportCenter() : { x: 0, y: 0 };
+  const defaultX = center.x - def.w / 2 + targetState.cards.length * 18;
+  const defaultY = center.y - def.h / 2 + targetState.cards.length * 18;
   const defaultAspect = type === "commerce" ? "3:4" : "auto";
   const defaultImageResolution = type === "commerce" ? "2k" : "1k";
   const card = {
@@ -1488,7 +1565,12 @@ function createCard(type, options = {}) {
     task: null,
     error: ""
   };
-  state.cards.push(card);
+  targetState.cards.push(card);
+  return card;
+}
+
+function createCard(type, options = {}) {
+  const card = createCardRecord(type, options, state);
   selectSingle(card.id);
   els.nodePalette.classList.add("hidden");
   render();
@@ -1505,15 +1587,15 @@ function rectsOverlap(a, b, gap = 28) {
   );
 }
 
-function resultSiblings(source) {
-  return state.edges
+function resultSiblings(source, targetState = state) {
+  return targetState.edges
     .filter(edge => edge.from === source.id)
-    .map(edge => findCard(edge.to))
+    .map(edge => targetState.cards.find(card => card.id === edge.to))
     .filter(card => card && card.type === "upload" && card.resultUrl);
 }
 
-function resultPosition(source, resultType, w, h) {
-  const siblings = resultSiblings(source);
+function resultPosition(source, resultType, w, h, targetState = state) {
+  const siblings = resultSiblings(source, targetState);
   const startSlot = siblings.length;
   const columns = 3;
   const gapX = 42;
@@ -1528,7 +1610,7 @@ function resultPosition(source, resultType, w, h) {
       w,
       h
     };
-    const blocked = state.cards.some(card => card.id !== source.id && rectsOverlap(candidate, card));
+    const blocked = targetState.cards.some(card => card.id !== source.id && rectsOverlap(candidate, card));
     if (!blocked) return candidate;
   }
   return {
@@ -1539,13 +1621,16 @@ function resultPosition(source, resultType, w, h) {
   };
 }
 
-function duplicateResultCard(source, resultType, resultUrl, mime) {
+function duplicateResultCard(source, resultType, resultUrl, mime, canvasId = canvasLibrary.activeCanvasId) {
+  const targetState = canvasStateFor(canvasId);
+  const targetSource = targetState?.cards?.find(card => card.id === source.id);
+  if (!targetState || !targetSource) return null;
   const w = resultType === "video" ? 340 : 310;
   const h = resultType === "video" ? 260 : 240;
-  const position = resultPosition(source, resultType, w, h);
-  const index = resultSiblings(source).length + 1;
+  const position = resultPosition(targetSource, resultType, w, h, targetState);
+  const index = resultSiblings(targetSource, targetState).length + 1;
   const card = {
-    ...source,
+    ...targetSource,
     id: uid(resultType),
     type: "upload",
     title: `${resultType === "video" ? "生成视频" : "生成图片"} ${index}`,
@@ -1557,16 +1642,17 @@ function duplicateResultCard(source, resultType, resultUrl, mime) {
     progress: 100,
     resultUrl,
     mime,
-    prompt: source.prompt,
+    prompt: targetSource.prompt,
     refs: [],
     task: null,
     error: ""
   };
-  state.cards.push(card);
-  state.edges.push({ id: uid("edge"), from: source.id, to: card.id });
+  targetState.cards.push(card);
+  targetState.edges.push({ id: uid("edge"), from: targetSource.id, to: card.id });
+  return card;
 }
 
-function commerceResultPosition(source, w, h) {
+function commerceResultPosition(source, w, h, targetState = state) {
   const start = {
     x: source.x + source.w + 70,
     y: source.y,
@@ -1582,37 +1668,39 @@ function commerceResultPosition(source, w, h) {
       w,
       h
     };
-    if (!state.cards.some(card => rectsOverlap(candidate, card))) return candidate;
+    if (!targetState.cards.some(card => rectsOverlap(candidate, card))) return candidate;
   }
-  return { x: start.x, y: start.y + state.cards.length * 24, w, h };
+  return { x: start.x, y: start.y + targetState.cards.length * 24, w, h };
 }
 
-function createCommerceResultCard(source, resultUrl, prompt, mime = "image/png") {
-  const w = 310;
-  const h = 240;
-  const position = commerceResultPosition(source, w, h);
-  const index = source.commerceResultIds.length + 1;
-  const card = createCard("upload", {
-    x: position.x,
-    y: position.y,
-    title: `电商宣传图 ${index}`,
-    resultUrl,
-    mime
+function createCommerceResultCard(source, resultUrl, prompt, mime = "image/png", canvasId = canvasLibrary.activeCanvasId) {
+  return mutateCanvasById(canvasId, targetState => {
+    const targetSource = targetState.cards.find(card => card.id === source.id);
+    if (!targetSource) return null;
+    const w = 310;
+    const h = 240;
+    const position = commerceResultPosition(targetSource, w, h, targetState);
+    const index = targetSource.commerceResultIds.length + 1;
+    const card = createCardRecord("upload", {
+      x: position.x,
+      y: position.y,
+      title: `电商宣传图 ${index}`,
+      resultUrl,
+      mime
+    }, targetState);
+    Object.assign(card, {
+      w,
+      h,
+      status: "done",
+      progress: 100,
+      prompt,
+      error: "",
+      sourceWorkflow: "commerce"
+    });
+    targetSource.commerceResultIds.push(card.id);
+    if (canvasId === canvasLibrary.activeCanvasId) selectSingle(targetSource.id);
+    return card;
   });
-  Object.assign(card, {
-    w,
-    h,
-    status: "done",
-    progress: 100,
-    prompt,
-    error: "",
-    sourceWorkflow: "commerce"
-  });
-  source.commerceResultIds.push(card.id);
-  selectSingle(source.id);
-  render();
-  save();
-  return card;
 }
 
 function typeLabel(type) {
@@ -1849,16 +1937,19 @@ function productVideoRequest(apiKey) {
   };
 }
 
-function storeProductVideoResult(url, prompt) {
-  const workspace = state.productVideoWorkspace;
-  workspace.results.unshift({ id: uid("product-video-result"), url, mime: "video/mp4", prompt, createdAt: Date.now(), status: "done" });
-  workspace.status = "done";
-  workspace.progress = 100;
-  workspace.error = "";
-  workspace.task = null;
+function storeProductVideoResult(url, prompt, canvasId = canvasLibrary.activeCanvasId) {
+  return mutateCanvasById(canvasId, targetState => {
+    const workspace = targetState.productVideoWorkspace;
+    workspace.results.unshift({ id: uid("product-video-result"), url, mime: "video/mp4", prompt, createdAt: Date.now(), status: "done" });
+    workspace.status = "done";
+    workspace.progress = 100;
+    workspace.error = "";
+    workspace.task = null;
+  }, renderProductVideoWorkspace);
 }
 
 async function generateProductVideo() {
+  const originCanvasId = canvasLibrary.activeCanvasId;
   const workspace = state.productVideoWorkspace;
   if (!workspace.productRef || workspace.status === "running") return;
   collectSettings();
@@ -1881,45 +1972,50 @@ async function generateProductVideo() {
   workspace.error = "";
   renderProductVideoWorkspace();
   save();
+  const request = productVideoRequest(apiKey);
+  const resultPrompt = request.prompt;
   try {
-    const created = await postJson("/api/agnes/video", productVideoRequest(apiKey));
+    const created = await postJson("/api/agnes/video", request);
     const response = created.response || {};
     const directUrl = response.url || response.video_url || response.result?.url;
     if (directUrl) {
-      storeProductVideoResult(directUrl, productVideoPrompt());
+      storeProductVideoResult(directUrl, resultPrompt, originCanvasId);
     } else {
       const task = { video_id: response.video_id, task_id: response.task_id || response.id };
       if (!task.video_id && !task.task_id) throw new Error("Agnes 视频 API 未返回任务 ID。 ");
-      workspace.task = task;
-      workspace.progress = Number(response.progress || 12);
-      await pollProductVideo(apiKey);
+      mutateCanvasById(originCanvasId, targetState => {
+        targetState.productVideoWorkspace.task = task;
+        targetState.productVideoWorkspace.progress = Number(response.progress || 12);
+      }, renderProductVideoWorkspace);
+      await pollProductVideo(apiKey, originCanvasId, resultPrompt);
     }
   } catch (error) {
-    workspace.status = "error";
-    workspace.error = error.message || "产品视频生成失败。";
-    workspace.task = null;
-  } finally {
-    renderProductVideoWorkspace();
-    save();
+    mutateCanvasById(originCanvasId, targetState => {
+      targetState.productVideoWorkspace.status = "error";
+      targetState.productVideoWorkspace.error = error.message || "产品视频生成失败。";
+      targetState.productVideoWorkspace.task = null;
+    }, renderProductVideoWorkspace);
   }
 }
 
-async function pollProductVideo(apiKey) {
-  const workspace = state.productVideoWorkspace;
+async function pollProductVideo(apiKey, originCanvasId = canvasLibrary.activeCanvasId, resultPrompt = "") {
   const maxAttempts = 120;
   let delay = normalizePollInterval(settings.pollInterval);
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    if (!workspace.task) return;
+    const workspace = canvasStateFor(originCanvasId)?.productVideoWorkspace;
+    if (!workspace?.task) return;
+    const task = cloneData(workspace.task);
     await sleep(delay);
     let data;
     try {
-      data = await postJson("/api/agnes/video-result", { apiKey, model: settings.videoModel, video_id: workspace.task.video_id, task_id: workspace.task.task_id });
+      data = await postJson("/api/agnes/video-result", { apiKey, model: settings.videoModel, video_id: task.video_id, task_id: task.task_id });
     } catch (error) {
       if (isRateLimitError(error)) {
         delay = Math.min(MAX_VIDEO_POLL_INTERVAL, Math.max(Math.round(delay * 1.8), 15000));
-        workspace.status = "running";
-        workspace.error = rateLimitMessage(delay);
-        renderProductVideoWorkspace();
+        mutateCanvasById(originCanvasId, targetState => {
+          targetState.productVideoWorkspace.status = "running";
+          targetState.productVideoWorkspace.error = rateLimitMessage(delay);
+        }, renderProductVideoWorkspace);
         continue;
       }
       throw error;
@@ -1927,16 +2023,16 @@ async function pollProductVideo(apiKey) {
     delay = normalizePollInterval(settings.pollInterval);
     const result = data.response || {};
     const status = result.status || "running";
-    workspace.status = status === "completed" ? "running" : status;
-    workspace.progress = Number(result.progress ?? Math.min(95, 20 + attempt * 3));
-    workspace.error = "";
     if (status === "completed" && result.url) {
-      storeProductVideoResult(result.url, productVideoPrompt());
+      storeProductVideoResult(result.url, resultPrompt, originCanvasId);
       return;
     }
     if (status === "failed") throw new Error(result.error ? JSON.stringify(result.error) : "Agnes 产品视频生成失败。");
-    renderProductVideoWorkspace();
-    save();
+    mutateCanvasById(originCanvasId, targetState => {
+      targetState.productVideoWorkspace.status = status;
+      targetState.productVideoWorkspace.progress = Number(result.progress ?? Math.min(95, 20 + attempt * 3));
+      targetState.productVideoWorkspace.error = "";
+    }, renderProductVideoWorkspace);
   }
   throw new Error("产品视频生成轮询超时。可稍后重试或查看 Agnes 控制台。");
 }
@@ -3448,6 +3544,7 @@ function handleCommerceWorkspaceUpload(event) {
 }
 
 async function generateCommerceWorkspacePrompt() {
+  const originCanvasId = canvasLibrary.activeCanvasId;
   const workspace = state.commerceWorkspace;
   if (!workspace.productRef || workspace.promptMode !== "auto" || workspace.promptStatus === "running") return;
   collectSettings();
@@ -3478,19 +3575,22 @@ async function generateCommerceWorkspacePrompt() {
     });
     const generated = cleanGeneratedPrompt(promptResultText(data));
     if (!generated) throw new Error(promptResponseError(data));
-    workspace.prompt = generated;
-    workspace.lastGeneratedPrompt = generated;
-    workspace.promptStatus = "done";
+    mutateCanvasById(originCanvasId, targetState => {
+      targetState.commerceWorkspace.prompt = generated;
+      targetState.commerceWorkspace.lastGeneratedPrompt = generated;
+      targetState.commerceWorkspace.promptStatus = "done";
+      targetState.commerceWorkspace.promptError = "";
+    }, renderCommerceWorkspace);
   } catch (error) {
-    workspace.promptStatus = "error";
-    workspace.promptError = isContentPolicyViolation(error) ? commercePolicyErrorMessage() : error.message || "Agnes 提示词生成失败。";
-  } finally {
-    renderCommerceWorkspace();
-    save();
+    mutateCanvasById(originCanvasId, targetState => {
+      targetState.commerceWorkspace.promptStatus = "error";
+      targetState.commerceWorkspace.promptError = isContentPolicyViolation(error) ? commercePolicyErrorMessage() : error.message || "Agnes 提示词生成失败。";
+    }, renderCommerceWorkspace);
   }
 }
 
 async function generateCommerceWorkspacePromo() {
+  const originCanvasId = canvasLibrary.activeCanvasId;
   const workspace = state.commerceWorkspace;
   if (!workspace.productRef || workspace.status === "running" || (workspace.promptMode === "auto" && !workspace.prompt.trim())) return;
   collectSettings();
@@ -3504,6 +3604,7 @@ async function generateCommerceWorkspacePromo() {
   }
   const prompt = commerceWorkspacePrompt();
   const refs = commerceWorkspaceReferences();
+  const imageRequest = settings.provider === "custom" ? null : commerceWorkspaceImageRequest(apiKey, prompt);
   workspace.status = "running";
   workspace.error = "";
   renderCommerceWorkspace();
@@ -3529,20 +3630,21 @@ async function generateCommerceWorkspacePromo() {
       if (!url) throw new Error("自定义 API 没有按结果字段路径返回资产 URL。");
       result = { url, mime: "image/png" };
     } else {
-      const imageRequest = commerceWorkspaceImageRequest(apiKey, prompt);
       const imageResponse = await requestCommerceImage(imageRequest);
       result = imageResultUrl(imageResponse.data);
       if (!result) throw new Error("图片 API 未返回可用的图片 URL。");
-      workspace.results.unshift({ id: uid("commerce-result"), url: result.url, mime: result.mime, prompt: imageResponse.prompt, createdAt: Date.now(), status: "done" });
+      result.prompt = imageResponse.prompt;
     }
-    if (settings.provider === "custom") workspace.results.unshift({ id: uid("commerce-result"), url: result.url, mime: result.mime, prompt, createdAt: Date.now(), status: "done" });
-    workspace.status = "done";
+    mutateCanvasById(originCanvasId, targetState => {
+      targetState.commerceWorkspace.results.unshift({ id: uid("commerce-result"), url: result.url, mime: result.mime, prompt: result.prompt || prompt, createdAt: Date.now(), status: "done" });
+      targetState.commerceWorkspace.status = "done";
+      targetState.commerceWorkspace.error = "";
+    }, renderCommerceWorkspace);
   } catch (error) {
-    workspace.status = "error";
-    workspace.error = error.message || "电商宣传图生成失败。";
-  } finally {
-    renderCommerceWorkspace();
-    save();
+    mutateCanvasById(originCanvasId, targetState => {
+      targetState.commerceWorkspace.status = "error";
+      targetState.commerceWorkspace.error = error.message || "电商宣传图生成失败。";
+    }, renderCommerceWorkspace);
   }
 }
 
@@ -3713,6 +3815,7 @@ function promptHintFor(target, currentValue = "") {
 }
 
 async function generateCommercePrompt() {
+  const originCanvasId = canvasLibrary.activeCanvasId;
   const card = selectedCommerceCard();
   if (!card || card.commercePromptMode !== "auto") return;
   collectSettings();
@@ -3751,16 +3854,21 @@ async function generateCommercePrompt() {
     });
     const generated = cleanGeneratedPrompt(promptResultText(data));
     if (!generated) throw new Error(promptResponseError(data));
-    card.prompt = generated;
-    card.lastGeneratedPrompt = generated;
-    card.promptStatus = "done";
-    card.promptError = "";
+    mutateCanvasById(originCanvasId, targetState => {
+      const targetCard = targetState.cards.find(item => item.id === card.id);
+      if (!targetCard) return;
+      targetCard.prompt = generated;
+      targetCard.lastGeneratedPrompt = generated;
+      targetCard.promptStatus = "done";
+      targetCard.promptError = "";
+    });
   } catch (error) {
-    card.promptStatus = "error";
-    card.promptError = isContentPolicyViolation(error) ? commercePolicyErrorMessage() : error.message || "Agnes 提示词生成失败。";
-  } finally {
-    render();
-    save();
+    mutateCanvasById(originCanvasId, targetState => {
+      const targetCard = targetState.cards.find(item => item.id === card.id);
+      if (!targetCard) return;
+      targetCard.promptStatus = "error";
+      targetCard.promptError = isContentPolicyViolation(error) ? commercePolicyErrorMessage() : error.message || "Agnes 提示词生成失败。";
+    });
   }
 }
 
@@ -3772,6 +3880,7 @@ function imageResultUrl(data) {
 }
 
 async function generateCommercePromo() {
+  const originCanvasId = canvasLibrary.activeCanvasId;
   const card = selectedCommerceCard();
   if (!card) return;
   collectSettings();
@@ -3830,23 +3939,17 @@ async function generateCommercePromo() {
       const imageResponse = await requestCommerceImage(agnesImageRequest(card, apiKey, prompt, refs.imageRefs, refs.imageRoles));
       result = imageResultUrl(imageResponse.data);
       if (!result) throw new Error("图片 API 未返回可用的图片 URL。");
-      createCommerceResultCard(card, result.url, imageResponse.prompt, result.mime);
+      createCommerceResultCard(card, result.url, imageResponse.prompt, result.mime, originCanvasId);
     }
-    if (settings.provider === "custom") createCommerceResultCard(card, result.url, prompt, result.mime);
-    card.status = "done";
-    card.progress = 100;
-    card.error = "";
+    if (settings.provider === "custom") createCommerceResultCard(card, result.url, prompt, result.mime, originCanvasId);
+    updateCard(card.id, { status: "done", progress: 100, error: "" }, originCanvasId);
   } catch (error) {
-    card.status = "error";
-    card.progress = 0;
-    card.error = error.message || "电商宣传图生成失败。";
-  } finally {
-    render();
-    save();
+    updateCard(card.id, { status: "error", progress: 0, error: error.message || "电商宣传图生成失败。" }, originCanvasId);
   }
 }
 
 async function generateSelected() {
+  const originCanvasId = canvasLibrary.activeCanvasId;
   const card = selectedCard();
   if (!card || !["image", "video"].includes(card.type)) return;
   collectSettings();
@@ -3864,23 +3967,23 @@ async function generateSelected() {
   if (card.type === "video" && card.task && isRateLimitError({ message: card.error || "" })) {
     updateSelected({ status: "running", progress: Math.max(12, Number(card.progress || 12)), error: "继续查询已有视频任务，不会重复提交生成。" });
     try {
-      await pollVideo(card.id, apiKey);
+      await pollVideo(card.id, apiKey, originCanvasId);
     } catch (error) {
-      updateCard(card.id, { status: "error", progress: 0, error: error.message });
+      updateCard(card.id, { status: "error", progress: 0, error: error.message }, originCanvasId);
     }
     return;
   }
   updateSelected({ status: "running", progress: 8, error: "" });
   try {
-    if (settings.provider === "custom") await generateCustom(card, apiKey, prompt);
-    else if (card.type === "image") await generateAgnesImage(card, apiKey, prompt);
-    else await generateAgnesVideo(card, apiKey, prompt);
+    if (settings.provider === "custom") await generateCustom(card, apiKey, prompt, originCanvasId);
+    else if (card.type === "image") await generateAgnesImage(card, apiKey, prompt, originCanvasId);
+    else await generateAgnesVideo(card, apiKey, prompt, originCanvasId);
   } catch (error) {
-    updateCard(card.id, { status: "error", progress: 0, error: error.message });
+    updateCard(card.id, { status: "error", progress: 0, error: error.message }, originCanvasId);
   }
 }
 
-async function generateCustom(card, apiKey, prompt) {
+async function generateCustom(card, apiKey, prompt, originCanvasId) {
   let bodyTemplate = {};
   try { bodyTemplate = JSON.parse(settings.customBody || "{}"); } catch { throw new Error("自定义 Body Template 不是合法 JSON。"); }
   const refs = cardRefs(card);
@@ -3888,33 +3991,33 @@ async function generateCustom(card, apiKey, prompt) {
   const result = pathGet(data.response, settings.customResultPath);
   if (!result) throw new Error("自定义 API 没有按结果字段路径返回资产 URL。");
   const mime = card.type === "video" ? "video/mp4" : "image/png";
-  duplicateResultCard(card, card.type, result, mime);
-  updateCard(card.id, { status: "done", progress: 100, resultUrl: result, mime });
+  duplicateResultCard(card, card.type, result, mime, originCanvasId);
+  updateCard(card.id, { status: "done", progress: 100, resultUrl: result, mime }, originCanvasId);
 }
 
-async function generateAgnesImage(card, apiKey, prompt) {
+async function generateAgnesImage(card, apiKey, prompt, originCanvasId) {
   const data = await postJson("/api/agnes/image", agnesImageRequest(card, apiKey, prompt, cardRefs(card)));
   const item = data.response?.data?.[0] || {};
   let resultUrl = item.url || "";
   if (!resultUrl && item.b64_json) resultUrl = `data:image/png;base64,${item.b64_json}`;
   if (!resultUrl) throw new Error("Agnes 图片 API 未返回 data[0].url 或 data[0].b64_json。");
-  duplicateResultCard(card, "image", resultUrl, "image/png");
-  updateCard(card.id, { status: "done", progress: 100, resultUrl, mime: "image/png" });
+  duplicateResultCard(card, "image", resultUrl, "image/png", originCanvasId);
+  updateCard(card.id, { status: "done", progress: 100, resultUrl, mime: "image/png" }, originCanvasId);
 }
 
-async function generateAgnesVideo(card, apiKey, prompt) {
+async function generateAgnesVideo(card, apiKey, prompt, originCanvasId) {
   const { width, height } = parseSize(card.size);
   const created = await postJson("/api/agnes/video", { apiKey, model: card.model || settings.videoModel, prompt, imageRefs: cardRefs(card), width, height, num_frames: card.num_frames || 121, frame_rate: card.frame_rate || 24, negative_prompt: card.negative_prompt, generate_audio: card.generate_audio });
   const response = created.response || {};
-  updateCard(card.id, { status: response.status || "queued", progress: response.progress || 12, task: { video_id: response.video_id, task_id: response.task_id || response.id } });
-  await pollVideo(card.id, apiKey);
+  updateCard(card.id, { status: response.status || "queued", progress: response.progress || 12, task: { video_id: response.video_id, task_id: response.task_id || response.id } }, originCanvasId);
+  await pollVideo(card.id, apiKey, originCanvasId);
 }
 
-async function pollVideo(cardId, apiKey) {
+async function pollVideo(cardId, apiKey, originCanvasId = canvasLibrary.activeCanvasId) {
   const maxAttempts = 120;
   let delay = normalizePollInterval(settings.pollInterval);
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const card = findCard(cardId);
+    const card = findCanvasCard(originCanvasId, cardId);
     if (!card?.task) return;
     await sleep(delay);
 
@@ -3928,7 +4031,7 @@ async function pollVideo(cardId, apiKey) {
           status: "running",
           progress: Math.min(95, Number(card.progress || 12)),
           error: rateLimitMessage(delay)
-        });
+        }, originCanvasId);
         continue;
       }
       throw error;
@@ -3938,11 +4041,11 @@ async function pollVideo(cardId, apiKey) {
     const result = data.response || {};
     const status = result.status || "running";
     const progress = Number(result.progress ?? Math.min(95, 20 + attempt * 3));
-    updateCard(cardId, { status: status === "completed" ? "running" : status, progress, error: "" });
+    updateCard(cardId, { status: status === "completed" ? "running" : status, progress, error: "" }, originCanvasId);
     if (status === "completed" && result.url) {
-      const current = findCard(cardId);
-      duplicateResultCard(current, "video", result.url, "video/mp4");
-      updateCard(cardId, { status: "done", progress: 100, resultUrl: result.url, mime: "video/mp4", error: "" });
+      const current = findCanvasCard(originCanvasId, cardId);
+      duplicateResultCard(current, "video", result.url, "video/mp4", originCanvasId);
+      updateCard(cardId, { status: "done", progress: 100, resultUrl: result.url, mime: "video/mp4", error: "" }, originCanvasId);
       return;
     }
     if (status === "failed") throw new Error(result.error ? JSON.stringify(result.error) : "Agnes 视频生成失败。");
@@ -3950,12 +4053,13 @@ async function pollVideo(cardId, apiKey) {
   throw new Error("视频生成轮询超时。可稍后重新点击生成或查看 Agnes 控制台。");
 }
 
-function updateCard(id, patch) {
-  const card = findCard(id);
-  if (!card) return;
-  Object.assign(card, patch);
-  render();
-  save();
+function updateCard(id, patch, canvasId = canvasLibrary.activeCanvasId) {
+  return mutateCanvasById(canvasId, targetState => {
+    const card = targetState.cards.find(item => item.id === id);
+    if (!card) return null;
+    Object.assign(card, patch);
+    return card;
+  });
 }
 
 function setupActions() {
