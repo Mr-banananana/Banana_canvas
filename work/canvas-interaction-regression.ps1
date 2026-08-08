@@ -35,7 +35,7 @@ $connectionPointerBlock = [regex]::Match($app, 'const output = event\.target\.cl
 $edgePointerBlock = [regex]::Match($app, 'const edgePathNode = event\.target\.closest\("\[data-edge-id\]"\);[\s\S]*?return;').Value
 $connectionMoveBlock = [regex]::Match($app, 'if \(state\.connecting\) \{[\s\S]*?setConnectionTarget\([\s\S]*?scheduleInteractionFrame\(\{ edges: true \}\);[\s\S]*?return;').Value
 $connectionUpBlock = [regex]::Match($app, 'if \(state\.connecting\) \{[\s\S]*?showConnectionCreateMenu\(from, event\.clientX, event\.clientY\);[\s\S]*?return;').Value
-$deleteKeyBlock = [regex]::Match($app, 'if \(event\.key === "Delete" \|\| event\.key === "Backspace"\) \{[\s\S]*?return;[\s\S]*?\n\s*\}').Value
+$deleteKeyBlock = [regex]::Match($app, 'function setupKeyboardShortcuts\(\) \{[\s\S]*?if \(event\.key === "Delete" \|\| event\.key === "Backspace"\) \{[\s\S]*?return;[\s\S]*?\n\s*\}').Value
 $deleteEdgeBlock = [regex]::Match($app, 'function deleteSelectedEdge\(\) \{[\s\S]*?\n\}').Value
 $stagePointerGuardBlock = [regex]::Match($app, 'els\.stage\.addEventListener\("pointerdown", event => \{[\s\S]*?\n\s*\}\);').Value
 $connectionMenuPointerBlock = [regex]::Match($app, 'els\.connectionCreateMenu\.addEventListener\("pointerdown", event =>[\s\S]*?\);').Value
@@ -44,6 +44,38 @@ $minimapPointBlock = [regex]::Match($app, 'function minimapPointToViewport\(clie
 $beginMinimapBlock = [regex]::Match($app, 'function beginMinimapPan\(event\) \{[\s\S]*?\n\}').Value
 $updateMinimapBlock = [regex]::Match($app, 'function updateMinimapPan\(event\) \{[\s\S]*?\n\}').Value
 $endMinimapBlock = [regex]::Match($app, 'function endMinimapPan\(event\) \{[\s\S]*?\n\}').Value
+$normalizeEdgesBlock = [regex]::Match($app, 'function normalizeCanvasEdges\(edges\) \{[\s\S]*?\n\}').Value
+$renderBlock = [regex]::Match($app, 'function render\(\) \{[\s\S]*?\n\}').Value
+$setConnectionTargetBlock = [regex]::Match($app, 'function setConnectionTarget\(cardId, validity\) \{[\s\S]*?\n\}').Value
+$selectEdgeBlock = [regex]::Match($app, 'function selectEdge\(id\) \{[\s\S]*?\n\}').Value
+$edgeKeyBlock = [regex]::Match($app, 'function handleEdgeKeydown\(event\) \{[\s\S]*?\n\}').Value
+$minimapKeyBlock = [regex]::Match($app, 'function handleMinimapKeydown\(event\) \{[\s\S]*?\n\}').Value
+$edgeNormalizationFixturePass = $false
+if ($normalizeEdgesBlock) {
+  $edgeNormalizationProbe = @"
+let edgeSequence = 0;
+function uid() { return "edge_generated_" + (++edgeSequence); }
+$normalizeEdgesBlock
+const result = normalizeCanvasEdges([
+  { id: "keep", from: "a", to: "b" },
+  { id: 7, from: "b", to: "c" },
+  { id: 7, from: "c", to: "d" },
+  { id: "keep", from: "d", to: "e" },
+  { id: "", from: "e", to: "f" },
+  { from: "f", to: "g" },
+  { id: 9, from: "g", to: "h" },
+  { id: "9", from: "h", to: "i" }
+]);
+const ids = result.map(edge => edge.id);
+if (ids[0] !== "keep" || ids[1] !== "7" || ids[7] !== "9") process.exit(1);
+if (ids.some(id => typeof id !== "string" || !id.length)) process.exit(1);
+if (new Set(ids).size !== ids.length) process.exit(1);
+"@
+  $env:EDGE_NORMALIZATION_PROBE = $edgeNormalizationProbe
+  & node -e 'eval(process.env.EDGE_NORMALIZATION_PROBE)'
+  $edgeNormalizationFixturePass = $LASTEXITCODE -eq 0
+  Remove-Item Env:\EDGE_NORMALIZATION_PROBE
+}
 
 $checks = @(
   @{
@@ -174,11 +206,69 @@ $checks = @(
   @{
     Name = 'connections expose visible and expanded selectable paths'
     Pass = $app -match 'selectedEdgeId:\s*null' -and
-      $app -match 'class="connection-hit" data-edge-id=' -and
-      $app -match 'class="connection-path[^\"]*" data-edge-id=' -and
+      $app -match 'class="connection-hit"[^>]*data-edge-id=' -and
+      $app -match 'class="connection-path[^\"]*"[^>]*data-edge-id=' -and
       $edgePointerBlock -match 'selectEdge\(edgePathNode\.dataset\.edgeId\)' -and
       $styles -match '\.connection-hit\s*\{[\s\S]*?stroke-width:\s*(1[4-9]|2[0-4])' -and
       $styles -match '\.connection-path\.selected\s*\{'
+  },
+  @{
+    Name = 'imported edge ids normalize to unique nonempty strings'
+    Pass = $edgeNormalizationFixturePass -and
+      $normalizeEdgesBlock -match 'reservedStringIds' -and
+      $normalizeEdgesBlock -match 'typeof edge\?\.id === "string"' -and
+      $normalizeEdgesBlock -match 'Number\.isFinite\(edge\?\.id\)' -and
+      $normalizeEdgesBlock -match 'String\(edge\.id\)' -and
+      $normalizeEdgesBlock -match 'usedIds\.has\(' -and
+      $normalizeEdgesBlock -match 'uid\("edge"\)' -and
+      $app -match 'edges:\s*normalizeCanvasEdges\(' -and
+      $app -match 'state\.edges = normalizeCanvasEdges\(state\.edges\)' -and
+      $selectEdgeBlock -match 'const normalizedId = String\(id \?\? ""\)' -and
+      $selectEdgeBlock -match 'state\.selectedEdgeId = edge\.id;'
+  },
+  @{
+    Name = 'structural render reapplies active connection target feedback'
+    Pass = $app -match 'function restoreConnectionFeedback\(\)' -and
+      $renderBlock -match 'cacheCardNodes\(\);[\s\S]*?restoreConnectionFeedback\(\);' -and
+      $setConnectionTargetBlock -notmatch 'targetId === cardId && connecting\.targetValidity === validity\) return;'
+  },
+  @{
+    Name = 'edge hit paths expose keyboard selection and deletion'
+    Pass = $app -match 'class="connection-hit"[^>]*tabindex="0"[^>]*role="button"[^>]*aria-label=' -and
+      $app -match 'class="connection-path[^\"]*"[^>]*aria-hidden="true"' -and
+      $app -match '<svg class="connection-svg" role="group" aria-label=' -and
+      $app -notmatch '<svg class="connection-svg" aria-hidden="true"' -and
+      $edgeKeyBlock -match 'event\.key === "Enter" \|\| event\.key === " "' -and
+      $edgeKeyBlock -match 'selectEdge\(edgePathNode\.dataset\.edgeId\)' -and
+      $edgeKeyBlock -match 'event\.key === "Delete" \|\| event\.key === "Backspace"' -and
+      $edgeKeyBlock -match 'deleteSelectedEdge\(\)' -and
+      $app -match 'els\.stage\.addEventListener\("keydown", handleEdgeKeydown\)'
+  },
+  @{
+    Name = 'minimap is keyboard accessible with incremental arrow navigation'
+    Pass = $app -match 'minimapCanvas\.tabIndex = 0' -and
+      $app -match 'minimapCanvas\.setAttribute\("role", "application"\)' -and
+      $app -match 'minimapCanvas\.setAttribute\("aria-label"' -and
+      $app -match 'minimapCanvas\.addEventListener\("keydown", handleMinimapKeydown\)' -and
+      $minimapKeyBlock -match 'ArrowLeft' -and $minimapKeyBlock -match 'ArrowRight' -and
+      $minimapKeyBlock -match 'ArrowUp' -and $minimapKeyBlock -match 'ArrowDown' -and
+      $minimapKeyBlock -match 'event\.shiftKey' -and
+      $minimapKeyBlock -match 'scheduleInteractionFrame\(\{ viewport: true, dock: true, minimap: true \}\);' -and
+      $minimapKeyBlock -notmatch 'render\(\)'
+  },
+  @{
+    Name = 'minimap disables native touch gestures'
+    Pass = $styles -match '\.minimap canvas\s*\{[^}]*touch-action:\s*none'
+  },
+  @{
+    Name = 'minimap backing store scales for device pixel ratio in css coordinates'
+    Pass = $minimapBlock -match 'window\.devicePixelRatio' -and
+      $minimapBlock -match 'canvas\.width\s*=\s*Math\.round\(width \* pixelRatio\)' -and
+      $minimapBlock -match 'canvas\.height\s*=\s*Math\.round\(height \* pixelRatio\)' -and
+      $minimapBlock -match 'ctx\.setTransform\(pixelRatio, 0, 0, pixelRatio, 0, 0\)' -and
+      $minimapBlock -match '__mapBounds\s*=\s*\{[\s\S]*?width,[\s\S]*?height' -and
+      $minimapClientBlock -match 'bounds\.width / rect\.width' -and
+      $beginMinimapBlock -match 'bounds\.width / rect\.width'
   },
   @{
     Name = 'delete removes a selected edge before selected cards'
@@ -192,7 +282,7 @@ $checks = @(
   @{
     Name = 'card selection predictably clears edge selection'
     Pass = $app -match 'function setSelected\(ids\) \{[\s\S]*?state\.selectedEdgeId = null;' -and
-      $app -match 'function selectEdge\(id\) \{[\s\S]*?setSelected\(\[\]\);[\s\S]*?state\.selectedEdgeId = id;'
+      $app -match 'function selectEdge\(id\) \{[\s\S]*?setSelected\(\[\]\);[\s\S]*?state\.selectedEdgeId = edge\.id;'
   },
   @{
     Name = 'connection drag marks valid and invalid input targets'
@@ -226,7 +316,7 @@ $checks = @(
   },
   @{
     Name = 'minimap click and drag navigation use pointer capture and incremental frames'
-    Pass = $minimapClientBlock -match 'canvas\.width / rect\.width' -and
+    Pass = $minimapClientBlock -match 'bounds\.width / rect\.width' -and
       $minimapClientBlock -match 'state\.minimapPan\?\.mapBounds \|\| canvas\?\.__mapBounds' -and
       $minimapPointBlock -match 'viewportRect\.width / 2' -and
       $beginMinimapBlock -match 'interactionController\.begin\("minimap-panning"' -and

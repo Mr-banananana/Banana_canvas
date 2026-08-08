@@ -321,7 +321,7 @@ button { cursor: pointer; }
 }
 
 .minimap { position: absolute; right: 18px; bottom: 18px; z-index: 12; width: 300px; height: 190px; padding: 7px; border: 1px solid rgba(231,255,37,.35); border-radius: 14px; background: rgba(16,18,17,.94); box-shadow: var(--shadow); }
-.minimap canvas { width: 100%; height: 100%; display: block; border-radius: 7px; cursor: crosshair; }
+.minimap canvas { width: 100%; height: 100%; display: block; border-radius: 7px; cursor: crosshair; touch-action: none; }
 
 @media (max-width: 720px) {
   .minimap { right: 10px; bottom: 10px; width: 250px; height: 160px; }
@@ -2509,6 +2509,12 @@ body {
   stroke: #fff36b;
   stroke-width: 5px;
   filter: drop-shadow(0 0 12px rgba(255, 243, 107, 0.78));
+}
+
+.connection-hit:focus-visible + .connection-path {
+  stroke: #ffffff;
+  stroke-width: 5px;
+  filter: drop-shadow(0 0 12px rgba(255, 255, 255, 0.72));
 }
 
 .card {

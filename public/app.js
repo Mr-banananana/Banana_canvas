@@ -286,6 +286,27 @@ function setApiKey(value) {
   else sessionStorage.removeItem(API_KEY_SESSION);
 }
 
+function normalizeCanvasEdges(edges) {
+  const source = Array.isArray(edges) ? edges : [];
+  const reservedStringIds = new Set();
+  source.forEach(edge => {
+    if (typeof edge?.id === "string" && edge.id.trim() && !reservedStringIds.has(edge.id)) reservedStringIds.add(edge.id);
+  });
+  const usedIds = new Set();
+  return source.map(edge => {
+    const stringId = typeof edge?.id === "string" && edge.id.trim() ? edge.id : "";
+    const numericId = typeof edge?.id === "number" && Number.isFinite(edge?.id) ? String(edge.id) : "";
+    let id = "";
+    if (stringId && !usedIds.has(stringId)) id = stringId;
+    else if (numericId && !reservedStringIds.has(numericId) && !usedIds.has(numericId)) id = numericId;
+    if (!id) {
+      do id = uid("edge"); while (usedIds.has(id) || reservedStringIds.has(id));
+    }
+    usedIds.add(id);
+    return { ...edge, id };
+  });
+}
+
 function createCanvasRecord(name = "未命名画布", source = {}) {
   const now = Date.now();
   return {
@@ -294,7 +315,7 @@ function createCanvasRecord(name = "未命名画布", source = {}) {
     createdAt: Number(source.createdAt || now),
     updatedAt: Number(source.updatedAt || now),
     cards: Array.isArray(source.cards) ? cloneData(source.cards) : [],
-    edges: Array.isArray(source.edges) ? cloneData(source.edges) : [],
+    edges: normalizeCanvasEdges(Array.isArray(source.edges) ? cloneData(source.edges) : []),
     groups: Array.isArray(source.groups) ? cloneData(source.groups) : [],
     canvasSnapshots: normalizeCanvasSnapshots(source.canvasSnapshots),
     viewport: {
@@ -546,6 +567,7 @@ function save() {
 function normalizeCanvasState() {
   state.cards.forEach(card => normalizeCard(card));
   state.edges = state.edges.filter(edge => findCard(edge.from) && findCard(edge.to) && edge.from !== edge.to);
+  state.edges = normalizeCanvasEdges(state.edges);
   state.groups = state.groups.map(normalizeCanvasGroup).filter(group => group.memberIds.length);
 }
 
@@ -848,9 +870,11 @@ function toggleSelected(id) {
 }
 
 function selectEdge(id) {
-  if (!state.edges.some(edge => edge.id === id)) return;
+  const normalizedId = String(id ?? "");
+  const edge = state.edges.find(item => item.id === normalizedId);
+  if (!edge) return;
   setSelected([]);
-  state.selectedEdgeId = id;
+  state.selectedEdgeId = edge.id;
 }
 
 function isCardSelected(id) {
@@ -949,6 +973,8 @@ function updateEdgeGeometry() {
       hitNode = document.createElementNS("http://www.w3.org/2000/svg", "path");
       hitNode.classList.add("connection-hit");
       hitNode.dataset.edgeId = edge.id;
+      hitNode.setAttribute("tabindex", "0");
+      hitNode.setAttribute("role", "button");
       svg.append(hitNode);
       edgeHitNodes.set(edge.id, hitNode);
     }
@@ -956,11 +982,14 @@ function updateEdgeGeometry() {
       node = document.createElementNS("http://www.w3.org/2000/svg", "path");
       node.classList.add("connection-path");
       node.dataset.edgeId = edge.id;
+      node.setAttribute("aria-hidden", "true");
       svg.append(node);
       edgeNodes.set(edge.id, node);
     }
     const path = edgePath(portPoint(from, "out"), portPoint(to, "in"));
     hitNode.setAttribute("d", path);
+    hitNode.setAttribute("aria-label", `连接：${from.title} 到 ${to.title}`);
+    hitNode.setAttribute("aria-pressed", String(state.selectedEdgeId === edge.id));
     node.setAttribute("d", path);
     node.classList.toggle("selected", state.selectedEdgeId === edge.id);
   });
@@ -1006,6 +1035,7 @@ function updateSelectionGeometry() {
   });
   edgeNodes.forEach((edgeNode, id) => {
     edgeNode.classList.toggle("selected", state.selectedEdgeId === id);
+    edgeHitNodes.get(id)?.setAttribute("aria-pressed", String(state.selectedEdgeId === id));
   });
   const cardsById = new Map(state.cards.map(card => [card.id, card]));
   const groupById = new Map(state.groups.map(group => [group.id, group]));
@@ -1203,9 +1233,16 @@ function renderSearchResults(query) {
 function renderMinimap() {
   const canvas = document.getElementById("minimapCanvas");
   if (!canvas) return;
+  const canvasRect = canvas.getBoundingClientRect();
+  const pixelRatio = Math.max(1, Number(window.devicePixelRatio || 1));
+  const width = Math.max(1, canvasRect.width);
+  const height = Math.max(1, canvasRect.height);
+  const backingWidth = Math.round(width * pixelRatio);
+  const backingHeight = Math.round(height * pixelRatio);
+  if (canvas.width !== backingWidth) canvas.width = Math.round(width * pixelRatio);
+  if (canvas.height !== backingHeight) canvas.height = Math.round(height * pixelRatio);
   const ctx = canvas.getContext("2d");
-  const width = canvas.width;
-  const height = canvas.height;
+  ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#111512";
   ctx.fillRect(0, 0, width, height);
@@ -1251,7 +1288,7 @@ function renderMinimap() {
   ctx.strokeStyle = "#ffffff";
   ctx.lineWidth = 1.5;
   ctx.strokeRect(viewportCanvasRect.left, viewportCanvasRect.top, viewportCanvasRect.width, viewportCanvasRect.height);
-  canvas.__mapBounds = { minX, minY, maxX, maxY, scale, padding: 10, viewportCanvasRect };
+  canvas.__mapBounds = { minX, minY, maxX, maxY, scale, padding: 10, width, height, viewportCanvasRect };
 }
 
 function minimapClientToWorld(clientX, clientY) {
@@ -1259,9 +1296,11 @@ function minimapClientToWorld(clientX, clientY) {
   const bounds = state.minimapPan?.mapBounds || canvas?.__mapBounds;
   if (!canvas || !bounds) return null;
   const rect = canvas.getBoundingClientRect();
+  const canvasX = (clientX - rect.left) * bounds.width / rect.width;
+  const canvasY = (clientY - rect.top) * bounds.height / rect.height;
   return {
-    x: bounds.minX + ((clientX - rect.left) * canvas.width / rect.width - bounds.padding) / bounds.scale,
-    y: bounds.minY + ((clientY - rect.top) * canvas.height / rect.height - bounds.padding) / bounds.scale
+    x: bounds.minX + (canvasX - bounds.padding) / bounds.scale,
+    y: bounds.minY + (canvasY - bounds.padding) / bounds.scale
   };
 }
 
@@ -1285,8 +1324,8 @@ function beginMinimapPan(event) {
   if (!canvas || !bounds || !nextViewport) return;
   if (!interactionController.begin("minimap-panning", { pointerId: event.pointerId })) return;
   const rect = canvas.getBoundingClientRect();
-  const canvasX = (event.clientX - rect.left) * canvas.width / rect.width;
-  const canvasY = (event.clientY - rect.top) * canvas.height / rect.height;
+  const canvasX = (event.clientX - rect.left) * bounds.width / rect.width;
+  const canvasY = (event.clientY - rect.top) * bounds.height / rect.height;
   const view = bounds.viewportCanvasRect;
   const grabbedViewport = canvasX >= view.left && canvasX <= view.left + view.width && canvasY >= view.top && canvasY <= view.top + view.height;
   const point = minimapClientToWorld(event.clientX, event.clientY);
@@ -1323,6 +1362,24 @@ function endMinimapPan(event) {
   interactionController.end(event.pointerId);
   canvas?.classList.remove("is-navigating");
   if (canvas?.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+  save();
+}
+
+function handleMinimapKeydown(event) {
+  const directions = {
+    ArrowLeft: { x: 1, y: 0 },
+    ArrowRight: { x: -1, y: 0 },
+    ArrowUp: { x: 0, y: 1 },
+    ArrowDown: { x: 0, y: -1 }
+  };
+  const direction = directions[event.key];
+  if (!direction) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const step = event.shiftKey ? 160 : 40;
+  state.viewport.x += direction.x * step;
+  state.viewport.y += direction.y * step;
+  scheduleInteractionFrame({ viewport: true, dock: true, minimap: true });
   save();
 }
 
@@ -1991,12 +2048,13 @@ function renderEdges() {
     if (!from || !to) return "";
     const path = edgePath(portPoint(from, "out"), portPoint(to, "in"));
     const selected = state.selectedEdgeId === edge.id ? " selected" : "";
-    return `<path class="connection-hit" data-edge-id="${escapeAttr(edge.id)}" d="${path}"></path><path class="connection-path${selected}" data-edge-id="${escapeAttr(edge.id)}" d="${path}"></path>`;
+    const label = escapeAttr(`连接：${from.title} 到 ${to.title}`);
+    return `<path class="connection-hit" tabindex="0" role="button" aria-label="${label}" aria-pressed="${state.selectedEdgeId === edge.id}" data-edge-id="${escapeAttr(edge.id)}" d="${path}"></path><path class="connection-path${selected}" aria-hidden="true" data-edge-id="${escapeAttr(edge.id)}" d="${path}"></path>`;
   }).join("");
   const draft = state.connecting
-    ? `<path class="connection-path dim" data-connection-draft="true" d="${edgePath(portPoint(findCard(state.connecting.from), "out"), state.connecting.to)}"></path>`
+    ? `<path class="connection-path dim" aria-hidden="true" data-connection-draft="true" d="${edgePath(portPoint(findCard(state.connecting.from), "out"), state.connecting.to)}"></path>`
     : "";
-  return `<svg class="connection-svg" aria-hidden="true">${paths}${draft}</svg>`;
+  return `<svg class="connection-svg" role="group" aria-label="节点连接">${paths}${draft}</svg>`;
 }
 
 function syncCardLayoutMetrics() {
@@ -2038,6 +2096,7 @@ function render() {
   state.alignmentGuides = [];
   renderAlignmentGuides(state.alignmentGuides);
   cacheCardNodes();
+  restoreConnectionFeedback();
   syncCardLayoutMetrics();
   els.stage.insertAdjacentHTML("afterbegin", renderEdges());
   cacheEdgeNodes();
@@ -2640,7 +2699,6 @@ function connectionTargetValidity(from, to) {
 function setConnectionTarget(cardId, validity) {
   const connecting = state.connecting;
   if (!connecting) return;
-  if (connecting.targetId === cardId && connecting.targetValidity === validity) return;
   const previousCard = cardNodes.get(connecting.targetId);
   previousCard?.classList.remove("connection-valid", "connection-invalid");
   previousCard?.querySelector(".port.input")?.classList.remove("connection-valid", "connection-invalid");
@@ -2652,11 +2710,36 @@ function setConnectionTarget(cardId, validity) {
   targetCard.querySelector(".port.input")?.classList.add(`connection-${connecting.targetValidity}`);
 }
 
+function restoreConnectionFeedback() {
+  const connecting = state.connecting;
+  if (!connecting) return;
+  cardNodes.get(connecting.from)?.querySelector(".port.output")?.classList.add("connecting");
+  setConnectionTarget(connecting.targetId, connecting.targetValidity);
+}
+
 function clearConnectionFeedback() {
   const connecting = state.connecting;
   if (!connecting) return;
   setConnectionTarget(null, null);
   cardNodes.get(connecting.from)?.querySelector(".port.output")?.classList.remove("connecting");
+}
+
+function handleEdgeKeydown(event) {
+  const edgePathNode = event.target.closest(".connection-hit[data-edge-id]");
+  if (!edgePathNode) return;
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    event.stopPropagation();
+    selectEdge(edgePathNode.dataset.edgeId);
+    scheduleInteractionFrame({ selection: true, edges: true, dock: true, minimap: true });
+    return;
+  }
+  if (event.key === "Delete" || event.key === "Backspace") {
+    event.preventDefault();
+    event.stopPropagation();
+    selectEdge(edgePathNode.dataset.edgeId);
+    deleteSelectedEdge();
+  }
 }
 
 function cancelCanvasInteraction() {
@@ -2693,6 +2776,7 @@ function cancelCanvasInteraction() {
 }
 
 function setupCanvasEvents() {
+  els.stage.addEventListener("keydown", handleEdgeKeydown);
   els.viewport.addEventListener("wheel", event => {
     const isZoomGesture = event.ctrlKey;
     if (!isZoomGesture && event.target.closest(".node-control-dock")) return;
@@ -3002,7 +3086,12 @@ function setupCanvasManagement() {
     focusCard(button.dataset.searchCardId);
     els.canvasSearchResults.classList.add("hidden");
   });
-  document.getElementById("minimapCanvas").addEventListener("pointerdown", beginMinimapPan);
+  const minimapCanvas = document.getElementById("minimapCanvas");
+  minimapCanvas.tabIndex = 0;
+  minimapCanvas.setAttribute("role", "application");
+  minimapCanvas.setAttribute("aria-label", "画布小地图，使用方向键导航");
+  minimapCanvas.addEventListener("pointerdown", beginMinimapPan);
+  minimapCanvas.addEventListener("keydown", handleMinimapKeydown);
   els.stage.addEventListener("pointerdown", event => {
     if (event.button === 0 && event.target.closest(".canvas-group-title")) event.stopPropagation();
   });
