@@ -14,6 +14,7 @@ $startSh = if (Test-Path (Join-Path $PSScriptRoot '..\start.sh')) { Get-Content 
 $assetGrid = [regex]::Match($styles, '\.commerce-asset-grid\s*\{[^}]*\}').Value
 $pointerDownBlock = [regex]::Match($app, 'els\.viewport\.addEventListener\("pointerdown", event => \{[\s\S]*?if \(event\.button === 2\)').Value
 $wheelBlock = [regex]::Match($app, 'els\.viewport\.addEventListener\("wheel", event => \{[\s\S]*?\}, \{ passive: false \}\);').Value
+$minimapBlock = [regex]::Match($app, 'function renderMinimap\(\) \{[\s\S]*?\n\}').Value
 
 $checks = @(
   @{
@@ -28,6 +29,36 @@ $checks = @(
     Pass = $app -match 'function updateCardTransforms\(' -and
       $app -match 'node\.style\.transform' -and
       $app -match 'function updateCardTransforms\(\)\s*\{(?:(?!innerHTML)[\s\S])*?\n\}'
+  },
+  @{
+    Name = 'selection frames synchronize the dock inspector'
+    Pass = $app -match 'if \(dirty\.selection\) \{[\s\S]*?syncInteractionInspector\(\);' -and
+      $app -match 'function syncInteractionInspector\(\)' -and
+      $app -match 'renderInspector\(\);'
+  },
+  @{
+    Name = 'wheel interactions use incremental frames without render'
+    Pass = $wheelBlock -match 'scheduleInteractionFrame\(\{ viewport: true, dock: true, minimap: true \}\);' -and
+      $wheelBlock -notmatch 'render\(\)'
+  },
+  @{
+    Name = 'completed edges use one structural render for connected UI'
+    Pass = $app -match 'if \(input && input\.dataset\.id !== from\) \{[\s\S]*?addEdge\(from, input\.dataset\.id\);[\s\S]*?state\.connecting = null;[\s\S]*?render\(\);[\s\S]*?save\(\);'
+  },
+  @{
+    Name = 'interaction hot paths cache selected cards edges and groups'
+    Pass = $app -match 'const edgeNodes = new Map\(\);' -and
+      $app -match 'const selectedIdSet = new Set\(state\.selectedIds\);' -and
+      $app -match 'const cardsById = new Map\(state\.cards\.map\(card => \[card\.id, card\]\)\);' -and
+      $app -match 'const groupById = new Map\(state\.groups\.map\(group => \[group\.id, group\]\)\);'
+  },
+  @{
+    Name = 'interaction updates avoid imported ID selector interpolation'
+    Pass = $app -notmatch 'querySelector\(`[^`]*\$\{(card|edge)\.'
+  },
+  @{
+    Name = 'minimap uses measured card layout height'
+    Pass = $minimapBlock -match 'card\.layoutH \?\? card\.h'
   },
   @{
     Name = 'state tracks a lasso selection rectangle'
@@ -96,7 +127,8 @@ $checks = @(
   @{
     Name = 'mouse wheel pans the canvas without changing zoom'
     Pass = $wheelBlock -match 'isZoomGesture' -and
-      $wheelBlock -match 'state\.viewport\.y\s*[-+]=[\s\S]*?event\.deltaY[\s\S]*?render\(\);' -and
+      $wheelBlock -match 'state\.viewport\.y\s*[-+]=[\s\S]*?event\.deltaY[\s\S]*?scheduleInteractionFrame' -and
+      $wheelBlock -notmatch 'render\(\)' -and
       $wheelBlock -match 'else' -and
       $wheelBlock -match 'state\.viewport\.scale\s*='
   },
