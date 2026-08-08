@@ -6,6 +6,7 @@ outputs/
 .agents/
 .codex/
 docs/superpowers/
+.worktrees/
 *.log
 .DS_Store
 Thumbs.db
