@@ -78,8 +78,11 @@ $mutateCanvasByIdBlock = [regex]::Match($app, 'function mutateCanvasById\(canvas
 $duplicateResultCardBlock = [regex]::Match($app, 'function duplicateResultCard\([^)]*\) \{[\s\S]*?\n\}').Value
 $canvasInteractionActiveBlock = [regex]::Match($app, 'function canvasInteractionActive\(\) \{[\s\S]*?\n\}').Value
 $renderActiveCanvasStateBlock = [regex]::Match($app, 'function renderActiveCanvasState\(\) \{[\s\S]*?\n\}').Value
+$applyQueuedCanvasMutationsBlock = [regex]::Match($app, 'function applyQueuedCanvasMutations\(\) \{[\s\S]*?\n\}').Value
+$flushPendingStructuralRefreshBlock = [regex]::Match($app, 'function flushPendingActiveCanvasStructuralRefresh\(\) \{[\s\S]*?\n\}').Value
 $flushQueuedActiveMutationsBlock = [regex]::Match($app, 'function flushQueuedActiveCanvasMutations\(\) \{[\s\S]*?\n\}').Value
 $commitConnectionCanvasChangeBlock = [regex]::Match($app, 'function commitConnectionCanvasChange\(\) \{[\s\S]*?\n\}').Value
+$persistLocalSaveSnapshotBlock = [regex]::Match($app, 'function persistLocalSaveSnapshot\(\) \{[\s\S]*?\n\}').Value
 $settleHistoryBlock = [regex]::Match($app, 'function settleHistoryInteractionForRestore\(\) \{[\s\S]*?\n\}').Value
 $undoCanvasBlock = [regex]::Match($app, 'function undoCanvas\(\) \{[\s\S]*?\n\}').Value
 $redoCanvasBlock = [regex]::Match($app, 'function redoCanvas\(\) \{[\s\S]*?\n\}').Value
@@ -729,7 +732,7 @@ $postJsonBlock
 }
 
 $deferredActiveMutationFixturePass = $false
-if ($canvasInteractionActiveBlock -and $renderActiveCanvasStateBlock -and $flushQueuedActiveMutationsBlock -and $commitConnectionCanvasChangeBlock -and $mutateCanvasByIdBlock -and $beginHistoryTransactionBlock -and $commitHistoryTransactionBlock) {
+if ($canvasInteractionActiveBlock -and $renderActiveCanvasStateBlock -and $applyQueuedCanvasMutationsBlock -and $flushPendingStructuralRefreshBlock -and $flushQueuedActiveMutationsBlock -and $commitConnectionCanvasChangeBlock -and $mutateCanvasByIdBlock -and $beginHistoryTransactionBlock -and $commitHistoryTransactionBlock) {
   $deferredActiveMutationProbe = @"
 function cloneData(value) { return JSON.parse(JSON.stringify(value)); }
 function snapshotKey(snapshot) { return JSON.stringify(snapshot || {}); }
@@ -748,6 +751,7 @@ const canvasLibrary = {
 };
 const interactionController = { value: { mode: "dragging", pointerId: 7 } };
 let queuedActiveCanvasMutations = [];
+let pendingActiveCanvasStructuralRefresh = false;
 let renders = 0;
 let saves = 0;
 const scheduledCanvasIds = [];
@@ -768,6 +772,12 @@ function save() {
   if (snapshotKey(nextSnapshot) !== snapshotKey(lastCanvasSnapshot)) pushHistorySnapshot(lastCanvasSnapshot);
   lastCanvasSnapshot = nextSnapshot;
 }
+function persistLocalSaveSnapshot() { save(); }
+function flushLocalSave() {
+  applyQueuedCanvasMutations();
+  flushPendingActiveCanvasStructuralRefresh();
+  persistLocalSaveSnapshot();
+}
 function scheduleLocalSave(canvasId) { scheduledCanvasIds.push(canvasId); }
 function canvasStateFor(canvasId) {
   if (canvasId === canvasLibrary.activeCanvasId) return state;
@@ -776,6 +786,8 @@ function canvasStateFor(canvasId) {
 function assert(condition) { if (!condition) process.exit(1); }
 $canvasInteractionActiveBlock
 $renderActiveCanvasStateBlock
+$applyQueuedCanvasMutationsBlock
+$flushPendingStructuralRefreshBlock
 $flushQueuedActiveMutationsBlock
 $commitConnectionCanvasChangeBlock
 $mutateCanvasByIdBlock
@@ -833,6 +845,110 @@ assert(scheduledCanvasIds.length === 1 && scheduledCanvasIds[0] === "canvas-inac
   & node -e 'eval(process.env.DEFERRED_ACTIVE_MUTATION_PROBE)'
   $deferredActiveMutationFixturePass = $LASTEXITCODE -eq 0
   Remove-Item Env:\DEFERRED_ACTIVE_MUTATION_PROBE
+}
+
+$lifecycleQueuedMutationFixturePass = $false
+if ($canvasInteractionActiveBlock -and $renderActiveCanvasStateBlock -and $applyQueuedCanvasMutationsBlock -and $flushPendingStructuralRefreshBlock -and $flushQueuedActiveMutationsBlock -and $persistLocalSaveSnapshotBlock -and $flushLocalSaveBlock -and $mutateCanvasByIdBlock -and $beginHistoryTransactionBlock -and $commitHistoryTransactionBlock) {
+  $lifecycleQueuedMutationProbe = @"
+function cloneData(value) { return JSON.parse(JSON.stringify(value)); }
+function snapshotKey(snapshot) { return JSON.stringify(snapshot || {}); }
+const state = {
+  cards: [{ id: "active-card", status: "idle", x: 0 }],
+  edges: [], groups: [], viewport: { x: 0, y: 0, scale: 1 }, workspaceMode: "canvas",
+  historyTransaction: null, historyPast: [], historyFuture: [], historyRestoring: false
+};
+const canvasLibrary = { activeCanvasId: "canvas-active", canvases: [{ id: "canvas-active", cards: state.cards }] };
+const interactionController = { value: { mode: "idle", pointerId: null } };
+let queuedActiveCanvasMutations = [];
+let pendingActiveCanvasStructuralRefresh = false;
+let lastCanvasSnapshot;
+let renders = 0;
+let cancelCalls = 0;
+let retries = 0;
+const persisted = [];
+const warnings = [];
+const mutationOrder = [];
+const console = { warn(...args) { warnings.push(args); } };
+const debouncedLocalSave = { cancel() { cancelCalls += 1; } };
+function performanceFixtureMode() { return false; }
+function render() { renders += 1; }
+function renderCommerceWorkspace() { renders += 1; }
+function renderProductVideoWorkspace() { renders += 1; }
+function renderHistoryMenu() {}
+function scheduleLocalSave() {}
+function retryPendingSettings() { retries += 1; }
+function canvasStateFor(canvasId) {
+  if (canvasId === canvasLibrary.activeCanvasId) return state;
+  return canvasLibrary.canvases.find(canvas => canvas.id === canvasId) || null;
+}
+function canvasSnapshot() { return cloneData({ cards: state.cards, edges: state.edges, groups: state.groups, viewport: state.viewport }); }
+function pushHistorySnapshot(snapshot) { state.historyPast.push(cloneData(snapshot)); state.historyFuture = []; }
+function captureLocalSavePayload(canvasId) { return { canvasId, activeCanvasId: canvasLibrary.activeCanvasId, snapshot: canvasSnapshot(), library: cloneData(canvasLibrary) }; }
+function commitLocalState(payload) {
+  const nextSnapshot = cloneData(payload.snapshot);
+  if (snapshotKey(nextSnapshot) !== snapshotKey(lastCanvasSnapshot)) pushHistorySnapshot(lastCanvasSnapshot);
+  lastCanvasSnapshot = nextSnapshot;
+  persisted.push(cloneData(payload));
+}
+function assert(condition) { if (!condition) process.exit(1); }
+$canvasInteractionActiveBlock
+$renderActiveCanvasStateBlock
+$applyQueuedCanvasMutationsBlock
+$flushPendingStructuralRefreshBlock
+$persistLocalSaveSnapshotBlock
+$flushQueuedActiveMutationsBlock
+$mutateCanvasByIdBlock
+$beginHistoryTransactionBlock
+$commitHistoryTransactionBlock
+$flushLocalSaveBlock
+
+lastCanvasSnapshot = canvasSnapshot();
+beginHistoryTransaction("wheel");
+state.viewport.y = -60;
+mutateCanvasById("canvas-active", target => { mutationOrder.push("status"); target.cards[0].status = "done"; });
+mutateCanvasById("canvas-active", target => { mutationOrder.push("result"); target.cards.push({ id: "result-card", status: "done", x: 240 }); });
+assert(state.cards.length === 1 && queuedActiveCanvasMutations.length === 2 && renders === 0);
+flushLocalSave();
+assert(state.historyTransaction === null && mutationOrder.join(",") === "status,result");
+assert(state.cards.length === 2 && state.cards[0].status === "done");
+assert(queuedActiveCanvasMutations.length === 0 && renders === 1 && persisted.length === 1);
+assert(persisted[0].snapshot.cards.length === 2 && persisted[0].snapshot.cards[0].status === "done");
+assert(state.historyPast.length === 2);
+assert(state.historyPast[0].viewport.y === 0 && state.historyPast[0].cards.length === 1);
+assert(state.historyPast[1].viewport.y === -60 && state.historyPast[1].cards.length === 1 && state.historyPast[1].cards[0].status === "idle");
+
+state.historyPast = [];
+lastCanvasSnapshot = canvasSnapshot();
+const rendersBeforeForcedDrain = renders;
+const persistsBeforeForcedDrain = persisted.length;
+interactionController.value = { mode: "dragging", pointerId: 9 };
+beginHistoryTransaction("drag");
+state.cards[0].x = 80;
+mutateCanvasById("canvas-active", target => { target.cards[0].status = "forced"; });
+flushLocalSave();
+assert(state.cards[0].status === "forced" && queuedActiveCanvasMutations.length === 0);
+assert(renders === rendersBeforeForcedDrain && pendingActiveCanvasStructuralRefresh === true);
+assert(persisted.length === persistsBeforeForcedDrain + 1 && persisted.at(-1).snapshot.cards[0].status === "forced");
+interactionController.value = { mode: "idle", pointerId: null };
+assert(flushQueuedActiveCanvasMutations() === true);
+assert(renders === rendersBeforeForcedDrain + 1 && pendingActiveCanvasStructuralRefresh === false);
+assert(persisted.length === persistsBeforeForcedDrain + 1);
+
+let missingMutationRan = false;
+let followingMutationRan = false;
+queuedActiveCanvasMutations.push(
+  { canvasId: "missing-canvas", mutate() { missingMutationRan = true; } },
+  { canvasId: "canvas-active", mutate() { followingMutationRan = true; } }
+);
+const blocked = applyQueuedCanvasMutations();
+assert(blocked.processed === 0 && blocked.blockedCanvasId === "missing-canvas");
+assert(queuedActiveCanvasMutations.length === 2 && !missingMutationRan && !followingMutationRan && warnings.length === 1);
+assert(cancelCalls >= 2 && retries >= 2);
+"@
+  $env:LIFECYCLE_QUEUED_MUTATION_PROBE = $lifecycleQueuedMutationProbe
+  & node -e 'eval(process.env.LIFECYCLE_QUEUED_MUTATION_PROBE)'
+  $lifecycleQueuedMutationFixturePass = $LASTEXITCODE -eq 0
+  Remove-Item Env:\LIFECYCLE_QUEUED_MUTATION_PROBE
 }
 
 $checks = @(
@@ -921,6 +1037,18 @@ $checks = @(
       $app -match 'pollVideo\(card\.id, apiKey, originCanvasId, task\)'
   },
   @{
+    Name = 'lifecycle flush drains queued mutations before persistence without pointer render'
+    Pass = $lifecycleQueuedMutationFixturePass -and
+      $flushLocalSaveBlock -match 'commitHistoryTransaction\(\)[\s\S]*?applyQueuedCanvasMutations\(\)[\s\S]*?persistLocalSaveSnapshot\(\)' -and
+      $applyQueuedCanvasMutationsBlock -match 'queuedActiveCanvasMutations\[0\]' -and
+      $applyQueuedCanvasMutationsBlock -match 'queuedActiveCanvasMutations\.shift\(\)' -and
+      $applyQueuedCanvasMutationsBlock -match 'console\.warn' -and
+      ($applyQueuedCanvasMutationsBlock + $flushQueuedActiveMutationsBlock + $persistLocalSaveSnapshotBlock) -notmatch '\bsave\(\)' -and
+      $exportJsonBlock -match 'flushLocalSave\(\)[\s\S]*?JSON\.stringify' -and
+      $switchCanvasBlock -match 'flushLocalSave\(\)[\s\S]*?activeCanvasId = target\.id' -and
+      $deleteActiveCanvasBlock -match 'flushLocalSave\(\)[\s\S]*?canvases\.splice'
+  },
+  @{
     Name = 'README documents optimized canvas interactions'
     Pass = $readme -match '左键.*框选' -and
       $readme -match 'Shift.*框选' -and
@@ -992,7 +1120,8 @@ $checks = @(
     Pass = $app -match 'function scheduleLocalSave\(' -and
       $app -match 'function flushLocalSave\(' -and
       $app -match 'createDebouncedCommit\([^,]+,\s*300\)' -and
-      $flushLocalSaveBlock -match 'debouncedLocalSave\.cancel\(\)[\s\S]*?captureLocalSavePayload\(canvasLibrary\.activeCanvasId\)' -and
+      $flushLocalSaveBlock -match 'persistLocalSaveSnapshot\(\)' -and
+      $persistLocalSaveSnapshotBlock -match 'debouncedLocalSave\.cancel\(\)[\s\S]*?captureLocalSavePayload\(canvasLibrary\.activeCanvasId\)' -and
       $pointerMoveBlock -notmatch '\bsave\(|persistCanvasLibrary\(|localStorage\.setItem' -and
       $wheelBlock -notmatch '\bsave\(|persistCanvasLibrary\(|localStorage\.setItem'
   },

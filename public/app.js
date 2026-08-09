@@ -167,6 +167,7 @@ let pendingInteractionFlags = {};
 let renderedInspectorSelectionId = null;
 let performanceFrameTelemetry = null;
 let queuedActiveCanvasMutations = [];
+let pendingActiveCanvasStructuralRefresh = false;
 let canvasLibrary = {
   schema: CANVAS_LIBRARY_SCHEMA,
   activeCanvasId: "canvas_default",
@@ -447,39 +448,55 @@ function renderActiveCanvasState() {
   else render();
 }
 
-function flushQueuedActiveCanvasMutations() {
-  if (!queuedActiveCanvasMutations.length || canvasInteractionActive()) return false;
-  const mutations = queuedActiveCanvasMutations;
-  queuedActiveCanvasMutations = [];
+function applyQueuedCanvasMutations() {
+  let processed = 0;
   let mutatedActiveCanvas = false;
   let mutatedInactiveCanvasId = null;
-  mutations.forEach(entry => {
+  let blockedCanvasId = null;
+  while (queuedActiveCanvasMutations.length) {
+    const entry = queuedActiveCanvasMutations[0];
     const target = canvasStateFor(entry.canvasId);
-    if (!target) return;
+    if (!target) {
+      blockedCanvasId = entry.canvasId;
+      console.warn("Queued canvas mutation target is unavailable; retaining queued mutations.", entry.canvasId);
+      break;
+    }
     entry.mutate(target);
+    queuedActiveCanvasMutations.shift();
+    processed += 1;
     if (entry.canvasId === canvasLibrary.activeCanvasId) mutatedActiveCanvas = true;
     else {
       target.updatedAt = Date.now();
       mutatedInactiveCanvasId = entry.canvasId;
     }
-  });
-  if (mutatedActiveCanvas) {
-    renderActiveCanvasState();
-    save();
-  } else if (mutatedInactiveCanvasId) {
-    scheduleLocalSave(mutatedInactiveCanvasId);
   }
-  return mutatedActiveCanvas || Boolean(mutatedInactiveCanvasId);
+  if (mutatedActiveCanvas) pendingActiveCanvasStructuralRefresh = true;
+  return { processed, mutatedActiveCanvas, mutatedInactiveCanvasId, blockedCanvasId };
+}
+
+function flushPendingActiveCanvasStructuralRefresh() {
+  if (!pendingActiveCanvasStructuralRefresh || interactionController.value.mode !== "idle") return false;
+  pendingActiveCanvasStructuralRefresh = false;
+  renderActiveCanvasState();
+  return true;
+}
+
+function flushQueuedActiveCanvasMutations() {
+  if (canvasInteractionActive()) return false;
+  const hadQueuedMutations = queuedActiveCanvasMutations.length > 0;
+  if (hadQueuedMutations) flushLocalSave();
+  const rendered = flushPendingActiveCanvasStructuralRefresh();
+  return hadQueuedMutations || rendered;
 }
 
 function commitConnectionCanvasChange() {
   if (queuedActiveCanvasMutations.length) {
-    save();
+    persistLocalSaveSnapshot();
     flushQueuedActiveCanvasMutations();
     return;
   }
   render();
-  save();
+  persistLocalSaveSnapshot();
 }
 
 function mutateCanvasById(canvasId, mutate, renderActive = render) {
@@ -723,15 +740,21 @@ function scheduleLocalSave(canvasId = canvasLibrary.activeCanvasId) {
   debouncedLocalSave({ canvasId });
 }
 
+function persistLocalSaveSnapshot() {
+  debouncedLocalSave.cancel();
+  commitLocalState(captureLocalSavePayload(canvasLibrary.activeCanvasId));
+  retryPendingSettings();
+}
+
 function flushLocalSave() {
   if (performanceFixtureMode()) {
     debouncedLocalSave.cancel();
     return;
   }
   if (state.historyTransaction) commitHistoryTransaction();
-  debouncedLocalSave.cancel();
-  commitLocalState(captureLocalSavePayload(canvasLibrary.activeCanvasId));
-  retryPendingSettings();
+  applyQueuedCanvasMutations();
+  flushPendingActiveCanvasStructuralRefresh();
+  persistLocalSaveSnapshot();
 }
 
 function save() {
