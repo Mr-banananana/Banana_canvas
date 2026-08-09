@@ -2797,7 +2797,7 @@ function commitPendingDrag(event) {
     origins: dragCards.map(card => ({ card, id: card.id, x: card.x, y: card.y }))
   };
   state.pendingDrag = null;
-  if (performanceFixtureMode()) startCanvasPerformanceFrameTelemetry();
+  if (performanceFixtureMode()) startCanvasPerformanceFrameTelemetry(event.pointerId);
   updateDraggedCards(event.clientX, event.clientY, event.altKey);
   startDragAutoPan();
   return true;
@@ -2922,6 +2922,7 @@ function handleEdgeKeydown(event) {
 }
 
 function cancelCanvasInteraction() {
+  finishCanvasPerformanceFrameTelemetry("incomplete", state.drag?.pointerId);
   if (state.drag?.origins) {
     state.drag.origins.forEach(origin => {
       Object.assign(origin.card, { x: origin.x, y: origin.y });
@@ -3175,6 +3176,7 @@ function setupCanvasEvents() {
     const completedGesture = Boolean(state.drag || state.pan);
     if (completedGesture && commitHistoryTransaction()) scheduleLocalSave();
     els.viewport.classList.remove("is-panning");
+    finishCanvasPerformanceFrameTelemetry("incomplete", state.drag?.pointerId);
     stopDragAutoPan();
     state.drag = null;
     state.pan = null;
@@ -4111,18 +4113,36 @@ function performanceFixtureMode() {
   return requestedPerformanceFixtureCount() > 0;
 }
 
-function startCanvasPerformanceFrameTelemetry() {
+function finishCanvasPerformanceFrameTelemetry(status, pointerId = null) {
+  const telemetry = performanceFrameTelemetry;
+  if (!telemetry || (pointerId !== null && telemetry.pointerId !== pointerId)) return false;
+  if (telemetry.frameId) cancelAnimationFrame(telemetry.frameId);
+  if (telemetry.timeoutId) clearTimeout(telemetry.timeoutId);
+  const sorted = [...telemetry.samples].sort((a, b) => a - b);
+  const midpoint = Math.floor(sorted.length / 2);
+  const median = sorted.length
+    ? (sorted.length % 2 ? sorted[midpoint] : (sorted[midpoint - 1] + sorted[midpoint]) / 2)
+    : null;
+  const p95Index = Math.max(0, Math.ceil(sorted.length * 0.95) - 1);
+  const p95 = sorted.length ? sorted[p95Index] : null;
+  telemetry.root.setAttribute("data-canvas-performance-frame-status", status);
+  telemetry.root.setAttribute("data-canvas-performance-frame-sample-count", String(sorted.length));
+  telemetry.root.setAttribute("data-canvas-performance-frame-median-ms", median === null ? "" : median.toFixed(2));
+  telemetry.root.setAttribute("data-canvas-performance-frame-p95-ms", p95 === null ? "" : p95.toFixed(2));
+  performanceFrameTelemetry = null;
+  return true;
+}
+
+function startCanvasPerformanceFrameTelemetry(pointerId) {
   if (!performanceFixtureMode()) return false;
   const fixtureCount = requestedPerformanceFixtureCount();
   const root = document.documentElement;
-  if (!root || !fixtureCount) return false;
+  if (!root || !fixtureCount || state.drag?.pointerId !== pointerId) return false;
+  if (interactionController.value.mode !== "dragging" || interactionController.value.pointerId !== pointerId) return false;
 
-  if (performanceFrameTelemetry) {
-    if (performanceFrameTelemetry.frameId) cancelAnimationFrame(performanceFrameTelemetry.frameId);
-    if (performanceFrameTelemetry.timeoutId) clearTimeout(performanceFrameTelemetry.timeoutId);
-  }
+  finishCanvasPerformanceFrameTelemetry("incomplete");
 
-  const telemetry = { samples: [], previousTimestamp: null, frameId: 0, timeoutId: 0 };
+  const telemetry = { pointerId, root, samples: [], previousTimestamp: null, frameId: 0, timeoutId: 0 };
   performanceFrameTelemetry = telemetry;
   root.setAttribute("data-canvas-performance-fixture-count", String(fixtureCount));
   root.setAttribute("data-canvas-performance-frame-status", "sampling");
@@ -4130,37 +4150,30 @@ function startCanvasPerformanceFrameTelemetry() {
   root.setAttribute("data-canvas-performance-frame-median-ms", "");
   root.setAttribute("data-canvas-performance-frame-p95-ms", "");
 
-  const finish = status => {
-    if (performanceFrameTelemetry !== telemetry) return;
-    if (telemetry.frameId) cancelAnimationFrame(telemetry.frameId);
-    if (telemetry.timeoutId) clearTimeout(telemetry.timeoutId);
-    const sorted = [...telemetry.samples].sort((a, b) => a - b);
-    const midpoint = Math.floor(sorted.length / 2);
-    const median = sorted.length
-      ? (sorted.length % 2 ? sorted[midpoint] : (sorted[midpoint - 1] + sorted[midpoint]) / 2)
-      : null;
-    const p95Index = Math.max(0, Math.ceil(sorted.length * 0.95) - 1);
-    const p95 = sorted.length ? sorted[p95Index] : null;
-    root.setAttribute("data-canvas-performance-frame-status", status);
-    root.setAttribute("data-canvas-performance-frame-sample-count", String(sorted.length));
-    root.setAttribute("data-canvas-performance-frame-median-ms", median === null ? "" : median.toFixed(2));
-    root.setAttribute("data-canvas-performance-frame-p95-ms", p95 === null ? "" : p95.toFixed(2));
-    performanceFrameTelemetry = null;
-  };
-
   const sample = timestamp => {
     if (performanceFrameTelemetry !== telemetry) return;
     telemetry.frameId = 0;
+    if (state.drag?.pointerId !== telemetry.pointerId
+      || interactionController.value.mode !== "dragging"
+      || interactionController.value.pointerId !== telemetry.pointerId) {
+      finishCanvasPerformanceFrameTelemetry("incomplete", telemetry.pointerId);
+      return;
+    }
     if (telemetry.previousTimestamp !== null) telemetry.samples.push(timestamp - telemetry.previousTimestamp);
     telemetry.previousTimestamp = timestamp;
     if (telemetry.samples.length === 120) {
-      finish("complete");
+      finishCanvasPerformanceFrameTelemetry("complete", telemetry.pointerId);
       return;
     }
     telemetry.frameId = requestAnimationFrame(sample);
   };
 
-  telemetry.timeoutId = setTimeout(() => finish("timeout"), 10000);
+  telemetry.timeoutId = setTimeout(() => {
+    const dragIsActive = state.drag?.pointerId === telemetry.pointerId
+      && interactionController.value.mode === "dragging"
+      && interactionController.value.pointerId === telemetry.pointerId;
+    finishCanvasPerformanceFrameTelemetry(dragIsActive ? "timeout" : "incomplete", telemetry.pointerId);
+  }, 10000);
   telemetry.frameId = requestAnimationFrame(sample);
   return true;
 }
