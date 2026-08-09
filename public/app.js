@@ -166,6 +166,7 @@ const debouncedLocalSave = CanvasEngine.createDebouncedCommit(commitScheduledLoc
 let pendingInteractionFlags = {};
 let renderedInspectorSelectionId = null;
 let performanceFrameTelemetry = null;
+let deferredActiveCanvasMutation = false;
 let canvasLibrary = {
   schema: CANVAS_LIBRARY_SCHEMA,
   activeCanvasId: "canvas_default",
@@ -436,13 +437,34 @@ function findCanvasCard(canvasId, cardId) {
   return canvasStateFor(canvasId)?.cards?.find(card => card.id === cardId) || null;
 }
 
+function canvasInteractionActive() {
+  return interactionController.value.mode !== "idle" || state.historyTransaction?.label === "wheel";
+}
+
+function renderActiveCanvasState() {
+  if (state.workspaceMode === "commerce") renderCommerceWorkspace();
+  else if (state.workspaceMode === "product-video") renderProductVideoWorkspace();
+  else render();
+}
+
+function flushDeferredActiveCanvasMutation() {
+  if (!deferredActiveCanvasMutation || canvasInteractionActive()) return false;
+  deferredActiveCanvasMutation = false;
+  renderActiveCanvasState();
+  save();
+  return true;
+}
+
 function mutateCanvasById(canvasId, mutate, renderActive = render) {
   const target = canvasStateFor(canvasId);
   if (!target) return null;
   const result = mutate(target);
   if (canvasId === canvasLibrary.activeCanvasId) {
-    renderActive();
-    save();
+    if (canvasInteractionActive()) deferredActiveCanvasMutation = true;
+    else {
+      renderActive();
+      save();
+    }
   } else {
     target.updatedAt = Date.now();
     scheduleLocalSave(canvasId);
@@ -664,6 +686,7 @@ function commitScheduledLocalSave(marker) {
     return;
   }
   if (state.historyTransaction?.label === "wheel") commitHistoryTransaction();
+  if (flushDeferredActiveCanvasMutation()) return;
   commitLocalState(captureLocalSavePayload(canvasId));
 }
 
@@ -1518,6 +1541,7 @@ function endMinimapPan(event) {
   canvas?.classList.remove("is-navigating");
   if (canvas?.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
   if (commitHistoryTransaction()) scheduleLocalSave();
+  flushDeferredActiveCanvasMutation();
 }
 
 function handleMinimapKeydown(event) {
@@ -2028,7 +2052,7 @@ async function pollProductVideo(apiKey, originCanvasId = canvasLibrary.activeCan
     await sleep(delay);
     let data;
     try {
-      data = await postJson("/api/agnes/video-result", { apiKey, model: settings.videoModel, video_id: task.video_id, task_id: task.task_id });
+      data = await postJson("/api/agnes/video-result", { apiKey, model: settings.videoModel, video_id: task.video_id, task_id: task.task_id }, { flushLocalState: false });
     } catch (error) {
       if (isRateLimitError(error)) {
         delay = Math.min(MAX_VIDEO_POLL_INTERVAL, Math.max(Math.round(delay * 1.8), 15000));
@@ -2812,6 +2836,7 @@ function commitPendingCardClick(event) {
   interactionController.end(event.pointerId);
   cancelHistoryTransaction();
   scheduleInteractionFrame({ selection: true, dock: true, minimap: true });
+  flushDeferredActiveCanvasMutation();
   return true;
 }
 
@@ -2954,6 +2979,7 @@ function cancelCanvasInteraction() {
   els.viewport.classList.remove("is-panning");
   document.getElementById("minimapCanvas")?.classList.remove("is-navigating");
   scheduleInteractionFrame({ viewport: true, cards: true, edges: true, selection: true, guides: true, dock: true, minimap: true });
+  flushDeferredActiveCanvasMutation();
 }
 
 function setupCanvasEvents() {
@@ -2972,8 +2998,9 @@ function setupCanvasEvents() {
       state.viewport.scale = nextScale;
       state.viewport.x = Math.round(event.clientX - rect.left - pointerWorld.x * nextScale);
       state.viewport.y = Math.round(event.clientY - rect.top - pointerWorld.y * nextScale);
+    } else if (event.shiftKey) {
+      state.viewport.x -= Number(event.deltaY || event.deltaX || 0) * multiplier;
     } else {
-      state.viewport.x -= Number(event.deltaX || 0) * multiplier;
       state.viewport.y -= Number(event.deltaY || 0) * multiplier;
     }
     scheduleInteractionFrame({ viewport: true, dock: true, minimap: true });
@@ -3135,8 +3162,10 @@ function setupCanvasEvents() {
           addEdge(from, input.dataset.id);
           state.connecting = null;
           interactionController.end(event.pointerId);
-          render();
-          save();
+          if (!flushDeferredActiveCanvasMutation()) {
+            render();
+            save();
+          }
           return;
         }
       }
@@ -3145,6 +3174,7 @@ function setupCanvasEvents() {
         state.connecting = null;
         interactionController.end(event.pointerId);
         scheduleInteractionFrame({ edges: true });
+        flushDeferredActiveCanvasMutation();
         return;
       }
       showConnectionCreateMenu(from, event.clientX, event.clientY);
@@ -3152,6 +3182,7 @@ function setupCanvasEvents() {
       state.connecting = null;
       interactionController.end(event.pointerId);
       scheduleInteractionFrame({ edges: true });
+      flushDeferredActiveCanvasMutation();
       return;
     }
     if (state.pendingDrag) {
@@ -3171,6 +3202,7 @@ function setupCanvasEvents() {
       state.selectionBox = null;
       interactionController.end(event.pointerId);
       scheduleInteractionFrame({ selection: true, dock: true, minimap: true });
+      flushDeferredActiveCanvasMutation();
       return;
     }
     const completedGesture = Boolean(state.drag || state.pan);
@@ -3183,6 +3215,7 @@ function setupCanvasEvents() {
     state.alignmentGuides = [];
     interactionController.end(event.pointerId);
     scheduleInteractionFrame({ guides: true, dock: true, minimap: true });
+    flushDeferredActiveCanvasMutation();
   });
 
   window.addEventListener("pointercancel", event => {
@@ -3386,8 +3419,8 @@ function setupSettings() {
   els.settingsModal.addEventListener("click", event => { if (event.target === els.settingsModal) els.settingsModal.classList.add("hidden"); });
 }
 
-async function postJson(url, body) {
-  flushLocalSave();
+async function postJson(url, body, { flushLocalState = true } = {}) {
+  if (flushLocalState) flushLocalSave();
   const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.error) {
@@ -4046,7 +4079,7 @@ async function pollVideo(cardId, apiKey, originCanvasId = canvasLibrary.activeCa
 
     let data;
     try {
-      data = await postJson("/api/agnes/video-result", { apiKey, model: card.model || settings.videoModel, video_id: card.task.video_id, task_id: card.task.task_id });
+      data = await postJson("/api/agnes/video-result", { apiKey, model: card.model || settings.videoModel, video_id: card.task.video_id, task_id: card.task.task_id }, { flushLocalState: false });
     } catch (error) {
       if (isRateLimitError(error)) {
         delay = Math.min(MAX_VIDEO_POLL_INTERVAL, Math.max(Math.round(delay * 1.8), 15000));
