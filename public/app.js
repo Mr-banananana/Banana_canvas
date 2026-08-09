@@ -474,6 +474,16 @@ function applyQueuedCanvasMutations() {
   return { processed, mutatedActiveCanvas, mutatedInactiveCanvasId, blockedCanvasId };
 }
 
+function discardQueuedCanvasMutationsForStateReplacement(reason) {
+  const discarded = queuedActiveCanvasMutations.length;
+  if (discarded) {
+    console.warn(`Discarding ${discarded} queued canvas mutation(s) before ${reason} state replacement.`);
+  }
+  queuedActiveCanvasMutations = [];
+  pendingActiveCanvasStructuralRefresh = false;
+  return discarded;
+}
+
 function flushPendingActiveCanvasStructuralRefresh() {
   if (!pendingActiveCanvasStructuralRefresh || interactionController.value.mode !== "idle") return false;
   pendingActiveCanvasStructuralRefresh = false;
@@ -746,11 +756,18 @@ function persistLocalSaveSnapshot() {
   retryPendingSettings();
 }
 
+function settlePointerInteractionForSynchronousBoundary() {
+  if (interactionController.value.mode === "idle") return false;
+  cancelCanvasInteraction({ flushQueuedMutations: false });
+  return true;
+}
+
 function flushLocalSave() {
   if (performanceFixtureMode()) {
     debouncedLocalSave.cancel();
     return;
   }
+  settlePointerInteractionForSynchronousBoundary();
   if (state.historyTransaction) commitHistoryTransaction();
   applyQueuedCanvasMutations();
   flushPendingActiveCanvasStructuralRefresh();
@@ -3002,7 +3019,8 @@ function handleEdgeKeydown(event) {
   }
 }
 
-function cancelCanvasInteraction() {
+function cancelCanvasInteraction({ flushQueuedMutations = true } = {}) {
+  const activeInteraction = interactionController.value;
   finishCanvasPerformanceFrameTelemetry("incomplete", state.drag?.pointerId);
   if (state.drag?.origins) {
     state.drag.origins.forEach(origin => {
@@ -3032,10 +3050,19 @@ function cancelCanvasInteraction() {
   state.alignmentGuides = [];
   interactionController.cancel();
   cancelHistoryTransaction();
+  const pointerId = activeInteraction.pointerId;
+  const captureTargets = [
+    els.viewport,
+    document.getElementById("minimapCanvas"),
+    cardNodes.get(activeInteraction.payload?.cardId)
+  ];
+  new Set(captureTargets).forEach(target => {
+    if (pointerId !== null && target?.hasPointerCapture?.(pointerId)) target.releasePointerCapture(pointerId);
+  });
   els.viewport.classList.remove("is-panning");
   document.getElementById("minimapCanvas")?.classList.remove("is-navigating");
   scheduleInteractionFrame({ viewport: true, cards: true, edges: true, selection: true, guides: true, dock: true, minimap: true });
-  flushQueuedActiveCanvasMutations();
+  if (flushQueuedMutations) flushQueuedActiveCanvasMutations();
 }
 
 function setupCanvasEvents() {
@@ -3431,6 +3458,8 @@ function importJson(event) {
   reader.onload = () => {
     try {
       const data = JSON.parse(reader.result);
+      flushLocalSave();
+      discardQueuedCanvasMutationsForStateReplacement("import");
       if (Array.isArray(data.canvases)) {
         const imported = data.canvases.map(canvas => createCanvasRecord(canvas.name, canvas));
         if (!imported.length) throw new Error("文件中没有可用画布");
