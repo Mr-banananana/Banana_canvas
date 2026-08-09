@@ -166,7 +166,7 @@ const debouncedLocalSave = CanvasEngine.createDebouncedCommit(commitScheduledLoc
 let pendingInteractionFlags = {};
 let renderedInspectorSelectionId = null;
 let performanceFrameTelemetry = null;
-let deferredActiveCanvasMutation = false;
+let queuedActiveCanvasMutations = [];
 let canvasLibrary = {
   schema: CANVAS_LIBRARY_SCHEMA,
   activeCanvasId: "canvas_default",
@@ -447,24 +447,52 @@ function renderActiveCanvasState() {
   else render();
 }
 
-function flushDeferredActiveCanvasMutation() {
-  if (!deferredActiveCanvasMutation || canvasInteractionActive()) return false;
-  deferredActiveCanvasMutation = false;
-  renderActiveCanvasState();
+function flushQueuedActiveCanvasMutations() {
+  if (!queuedActiveCanvasMutations.length || canvasInteractionActive()) return false;
+  const mutations = queuedActiveCanvasMutations;
+  queuedActiveCanvasMutations = [];
+  let mutatedActiveCanvas = false;
+  let mutatedInactiveCanvasId = null;
+  mutations.forEach(entry => {
+    const target = canvasStateFor(entry.canvasId);
+    if (!target) return;
+    entry.mutate(target);
+    if (entry.canvasId === canvasLibrary.activeCanvasId) mutatedActiveCanvas = true;
+    else {
+      target.updatedAt = Date.now();
+      mutatedInactiveCanvasId = entry.canvasId;
+    }
+  });
+  if (mutatedActiveCanvas) {
+    renderActiveCanvasState();
+    save();
+  } else if (mutatedInactiveCanvasId) {
+    scheduleLocalSave(mutatedInactiveCanvasId);
+  }
+  return mutatedActiveCanvas || Boolean(mutatedInactiveCanvasId);
+}
+
+function commitConnectionCanvasChange() {
+  if (queuedActiveCanvasMutations.length) {
+    save();
+    flushQueuedActiveCanvasMutations();
+    return;
+  }
+  render();
   save();
-  return true;
 }
 
 function mutateCanvasById(canvasId, mutate, renderActive = render) {
+  if (canvasId === canvasLibrary.activeCanvasId && canvasInteractionActive()) {
+    queuedActiveCanvasMutations.push({ canvasId, mutate });
+    return null;
+  }
   const target = canvasStateFor(canvasId);
   if (!target) return null;
   const result = mutate(target);
   if (canvasId === canvasLibrary.activeCanvasId) {
-    if (canvasInteractionActive()) deferredActiveCanvasMutation = true;
-    else {
-      renderActive();
-      save();
-    }
+    renderActive();
+    save();
   } else {
     target.updatedAt = Date.now();
     scheduleLocalSave(canvasId);
@@ -686,7 +714,7 @@ function commitScheduledLocalSave(marker) {
     return;
   }
   if (state.historyTransaction?.label === "wheel") commitHistoryTransaction();
-  if (flushDeferredActiveCanvasMutation()) return;
+  if (flushQueuedActiveCanvasMutations()) return;
   commitLocalState(captureLocalSavePayload(canvasId));
 }
 
@@ -1541,7 +1569,7 @@ function endMinimapPan(event) {
   canvas?.classList.remove("is-navigating");
   if (canvas?.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
   if (commitHistoryTransaction()) scheduleLocalSave();
-  flushDeferredActiveCanvasMutation();
+  flushQueuedActiveCanvasMutations();
 }
 
 function handleMinimapKeydown(event) {
@@ -1665,35 +1693,39 @@ function resultPosition(source, resultType, w, h, targetState = state) {
   };
 }
 
-function duplicateResultCard(source, resultType, resultUrl, mime, canvasId = canvasLibrary.activeCanvasId) {
-  const targetState = canvasStateFor(canvasId);
-  const targetSource = targetState?.cards?.find(card => card.id === source.id);
-  if (!targetState || !targetSource) return null;
-  const w = resultType === "video" ? 340 : 310;
-  const h = resultType === "video" ? 260 : 240;
-  const position = resultPosition(targetSource, resultType, w, h, targetState);
-  const index = resultSiblings(targetSource, targetState).length + 1;
-  const card = {
-    ...targetSource,
-    id: uid(resultType),
-    type: "upload",
-    title: `${resultType === "video" ? "生成视频" : "生成图片"} ${index}`,
-    x: position.x,
-    y: position.y,
-    w,
-    h,
-    status: "done",
-    progress: 100,
-    resultUrl,
-    mime,
-    prompt: targetSource.prompt,
-    refs: [],
-    task: null,
-    error: ""
-  };
-  targetState.cards.push(card);
-  targetState.edges.push({ id: uid("edge"), from: targetSource.id, to: card.id });
-  return card;
+function duplicateResultCard(source, resultType, resultUrl, mime, canvasId = canvasLibrary.activeCanvasId, sourcePatch = null) {
+  const sourceId = source?.id;
+  if (!sourceId) return null;
+  return mutateCanvasById(canvasId, targetState => {
+    const targetSource = targetState.cards.find(card => card.id === sourceId);
+    if (!targetSource) return null;
+    const w = resultType === "video" ? 340 : 310;
+    const h = resultType === "video" ? 260 : 240;
+    const position = resultPosition(targetSource, resultType, w, h, targetState);
+    const index = resultSiblings(targetSource, targetState).length + 1;
+    const card = {
+      ...targetSource,
+      id: uid(resultType),
+      type: "upload",
+      title: `${resultType === "video" ? "生成视频" : "生成图片"} ${index}`,
+      x: position.x,
+      y: position.y,
+      w,
+      h,
+      status: "done",
+      progress: 100,
+      resultUrl,
+      mime,
+      prompt: targetSource.prompt,
+      refs: [],
+      task: null,
+      error: ""
+    };
+    targetState.cards.push(card);
+    targetState.edges.push({ id: uid("edge"), from: targetSource.id, to: card.id });
+    if (sourcePatch) Object.assign(targetSource, sourcePatch);
+    return card;
+  });
 }
 
 function commerceResultPosition(source, w, h, targetState = state) {
@@ -2031,7 +2063,7 @@ async function generateProductVideo() {
         targetState.productVideoWorkspace.task = task;
         targetState.productVideoWorkspace.progress = Number(response.progress || 12);
       }, renderProductVideoWorkspace);
-      await pollProductVideo(apiKey, originCanvasId, resultPrompt);
+      await pollProductVideo(apiKey, originCanvasId, resultPrompt, task);
     }
   } catch (error) {
     mutateCanvasById(originCanvasId, targetState => {
@@ -2042,13 +2074,14 @@ async function generateProductVideo() {
   }
 }
 
-async function pollProductVideo(apiKey, originCanvasId = canvasLibrary.activeCanvasId, resultPrompt = "") {
+async function pollProductVideo(apiKey, originCanvasId = canvasLibrary.activeCanvasId, resultPrompt = "", initialTask = null) {
   const maxAttempts = 120;
   let delay = normalizePollInterval(settings.pollInterval);
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const workspace = canvasStateFor(originCanvasId)?.productVideoWorkspace;
-    if (!workspace?.task) return;
-    const task = cloneData(workspace.task);
+    if (!workspace) return;
+    const task = cloneData(workspace.task || initialTask);
+    if (!task?.video_id && !task?.task_id) return;
     await sleep(delay);
     let data;
     try {
@@ -2836,7 +2869,7 @@ function commitPendingCardClick(event) {
   interactionController.end(event.pointerId);
   cancelHistoryTransaction();
   scheduleInteractionFrame({ selection: true, dock: true, minimap: true });
-  flushDeferredActiveCanvasMutation();
+  flushQueuedActiveCanvasMutations();
   return true;
 }
 
@@ -2979,7 +3012,7 @@ function cancelCanvasInteraction() {
   els.viewport.classList.remove("is-panning");
   document.getElementById("minimapCanvas")?.classList.remove("is-navigating");
   scheduleInteractionFrame({ viewport: true, cards: true, edges: true, selection: true, guides: true, dock: true, minimap: true });
-  flushDeferredActiveCanvasMutation();
+  flushQueuedActiveCanvasMutations();
 }
 
 function setupCanvasEvents() {
@@ -3162,10 +3195,7 @@ function setupCanvasEvents() {
           addEdge(from, input.dataset.id);
           state.connecting = null;
           interactionController.end(event.pointerId);
-          if (!flushDeferredActiveCanvasMutation()) {
-            render();
-            save();
-          }
+          commitConnectionCanvasChange();
           return;
         }
       }
@@ -3174,7 +3204,7 @@ function setupCanvasEvents() {
         state.connecting = null;
         interactionController.end(event.pointerId);
         scheduleInteractionFrame({ edges: true });
-        flushDeferredActiveCanvasMutation();
+        flushQueuedActiveCanvasMutations();
         return;
       }
       showConnectionCreateMenu(from, event.clientX, event.clientY);
@@ -3182,7 +3212,7 @@ function setupCanvasEvents() {
       state.connecting = null;
       interactionController.end(event.pointerId);
       scheduleInteractionFrame({ edges: true });
-      flushDeferredActiveCanvasMutation();
+      flushQueuedActiveCanvasMutations();
       return;
     }
     if (state.pendingDrag) {
@@ -3202,7 +3232,7 @@ function setupCanvasEvents() {
       state.selectionBox = null;
       interactionController.end(event.pointerId);
       scheduleInteractionFrame({ selection: true, dock: true, minimap: true });
-      flushDeferredActiveCanvasMutation();
+      flushQueuedActiveCanvasMutations();
       return;
     }
     const completedGesture = Boolean(state.drag || state.pan);
@@ -3215,7 +3245,7 @@ function setupCanvasEvents() {
     state.alignmentGuides = [];
     interactionController.end(event.pointerId);
     scheduleInteractionFrame({ guides: true, dock: true, minimap: true });
-    flushDeferredActiveCanvasMutation();
+    flushQueuedActiveCanvasMutations();
   });
 
   window.addEventListener("pointercancel", event => {
@@ -4047,8 +4077,7 @@ async function generateCustom(card, apiKey, prompt, originCanvasId) {
   const result = pathGet(data.response, settings.customResultPath);
   if (!result) throw new Error("自定义 API 没有按结果字段路径返回资产 URL。");
   const mime = card.type === "video" ? "video/mp4" : "image/png";
-  duplicateResultCard(card, card.type, result, mime, originCanvasId);
-  updateCard(card.id, { status: "done", progress: 100, resultUrl: result, mime }, originCanvasId);
+  duplicateResultCard(card, card.type, result, mime, originCanvasId, { status: "done", progress: 100, resultUrl: result, mime });
 }
 
 async function generateAgnesImage(card, apiKey, prompt, originCanvasId) {
@@ -4057,29 +4086,30 @@ async function generateAgnesImage(card, apiKey, prompt, originCanvasId) {
   let resultUrl = item.url || "";
   if (!resultUrl && item.b64_json) resultUrl = `data:image/png;base64,${item.b64_json}`;
   if (!resultUrl) throw new Error("Agnes 图片 API 未返回 data[0].url 或 data[0].b64_json。");
-  duplicateResultCard(card, "image", resultUrl, "image/png", originCanvasId);
-  updateCard(card.id, { status: "done", progress: 100, resultUrl, mime: "image/png" }, originCanvasId);
+  duplicateResultCard(card, "image", resultUrl, "image/png", originCanvasId, { status: "done", progress: 100, resultUrl, mime: "image/png" });
 }
 
 async function generateAgnesVideo(card, apiKey, prompt, originCanvasId) {
   const { width, height } = parseSize(card.size);
   const created = await postJson("/api/agnes/video", { apiKey, model: card.model || settings.videoModel, prompt, imageRefs: cardRefs(card), width, height, num_frames: card.num_frames || 121, frame_rate: card.frame_rate || 24, negative_prompt: card.negative_prompt, generate_audio: card.generate_audio });
   const response = created.response || {};
-  updateCard(card.id, { status: response.status || "queued", progress: response.progress || 12, task: { video_id: response.video_id, task_id: response.task_id || response.id } }, originCanvasId);
-  await pollVideo(card.id, apiKey, originCanvasId);
+  const task = { video_id: response.video_id, task_id: response.task_id || response.id };
+  updateCard(card.id, { status: response.status || "queued", progress: response.progress || 12, task }, originCanvasId);
+  await pollVideo(card.id, apiKey, originCanvasId, task);
 }
 
-async function pollVideo(cardId, apiKey, originCanvasId = canvasLibrary.activeCanvasId) {
+async function pollVideo(cardId, apiKey, originCanvasId = canvasLibrary.activeCanvasId, initialTask = null) {
   const maxAttempts = 120;
   let delay = normalizePollInterval(settings.pollInterval);
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const card = findCanvasCard(originCanvasId, cardId);
-    if (!card?.task) return;
+    const task = card?.task || initialTask;
+    if (!card || (!task?.video_id && !task?.task_id)) return;
     await sleep(delay);
 
     let data;
     try {
-      data = await postJson("/api/agnes/video-result", { apiKey, model: card.model || settings.videoModel, video_id: card.task.video_id, task_id: card.task.task_id }, { flushLocalState: false });
+      data = await postJson("/api/agnes/video-result", { apiKey, model: card.model || settings.videoModel, video_id: task.video_id, task_id: task.task_id }, { flushLocalState: false });
     } catch (error) {
       if (isRateLimitError(error)) {
         delay = Math.min(MAX_VIDEO_POLL_INTERVAL, Math.max(Math.round(delay * 1.8), 15000));
@@ -4100,8 +4130,7 @@ async function pollVideo(cardId, apiKey, originCanvasId = canvasLibrary.activeCa
     updateCard(cardId, { status: status === "completed" ? "running" : status, progress, error: "" }, originCanvasId);
     if (status === "completed" && result.url) {
       const current = findCanvasCard(originCanvasId, cardId);
-      duplicateResultCard(current, "video", result.url, "video/mp4", originCanvasId);
-      updateCard(cardId, { status: "done", progress: 100, resultUrl: result.url, mime: "video/mp4", error: "" }, originCanvasId);
+      duplicateResultCard(current, "video", result.url, "video/mp4", originCanvasId, { status: "done", progress: 100, resultUrl: result.url, mime: "video/mp4", error: "" });
       return;
     }
     if (status === "failed") throw new Error(result.error ? JSON.stringify(result.error) : "Agnes 视频生成失败。");
