@@ -14,6 +14,7 @@ $startPs1 = if (Test-Path (Join-Path $PSScriptRoot '..\start.ps1')) { Get-Conten
 $startCommand = if (Test-Path (Join-Path $PSScriptRoot '..\start.command')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\start.command') } else { '' }
 $startSh = if (Test-Path (Join-Path $PSScriptRoot '..\start.sh')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\start.sh') } else { '' }
 $assetGrid = [regex]::Match($styles, '\.commerce-asset-grid\s*\{[^}]*\}').Value
+$shortcutsBlock = [regex]::Match($html, '<div id="shortcutsModal"[\s\S]*?</div>\s*<script>').Value
 $pointerDownBlock = [regex]::Match($app, 'els\.viewport\.addEventListener\("pointerdown", event => \{[\s\S]*?if \(event\.button === 2\)').Value
 $wheelBlock = [regex]::Match($app, 'els\.viewport\.addEventListener\("wheel", event => \{[\s\S]*?\}, \{ passive: false \}\);').Value
 $minimapBlock = [regex]::Match($app, 'function renderMinimap\(\) \{[\s\S]*?\n\}').Value
@@ -1163,6 +1164,25 @@ $checks = @(
   @{
     Name = 'opening operation instructions closes other canvas overlays'
     Pass = $app -match 'function openShortcuts\(\)\s*\{[\s\S]*?hideContextMenu\(\);[\s\S]*?hideConnectionCreateMenu\(\);[\s\S]*?els\.nodePalette\.classList\.add\("hidden"\);'
+  },
+  @{
+    Name = 'operation instructions describe only current canvas workflows'
+    Pass = $shortcutsBlock -and
+      $shortcutsBlock -notmatch '左侧上传' -and
+      $shortcutsBlock -notmatch '电商宣传图</strong><span>添加节点面板' -and
+      $shortcutsBlock -match '上传资源</strong><span>添加节点面板或画布右键菜单' -and
+      $shortcutsBlock -match '电商宣传图</strong><span>左侧工具栏.*电商' -and
+      $shortcutsBlock -match '产品视频</strong><span>左侧工具栏.*产品视频' -and
+      $shortcutsBlock -match 'Shift</kbd>[\s\S]*?点击或框选' -and
+      $shortcutsBlock -match '达到 4px 后开始拖动' -and
+      $shortcutsBlock -match 'Alt</kbd>[\s\S]*?绕过吸附' -and
+      $shortcutsBlock -match 'Ctrl</kbd><kbd>D</kbd>' -and
+      $shortcutsBlock -match '选择连线[\s\S]*?Delete</kbd>[\s\S]*?Backspace</kbd>' -and
+      $shortcutsBlock -match '小地图[\s\S]*?点击定位、拖动导航、方向键移动' -and
+      $shortcutsBlock -match '滚轮垂直平移[\s\S]*?Ctrl</kbd><span>\+</span>滚轮缩放' -and
+      $readme -notmatch '添加节点.*电商宣传图|选择“电商宣传图”' -and
+      $readme -match '左侧.*电商.*电商宣传图' -and
+      $readme -match '左侧.*产品视频.*产品视频'
   },
   @{
     Name = 'canvas management persists groups and local snapshots'
