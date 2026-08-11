@@ -2,7 +2,7 @@
 
 一个本地运行的 RunningHub 类 AI 资产构建画布。用户填写自己的 Agnes AI API Key 后，可以在无限画布中生成图片和视频资产。
 
-> 如果这个项目对你有帮助，欢迎前往 [GitHub 仓库](https://github.com/Mr-banananana/Banana_canvas) 点个 Star，支持项目持续维护。
+> 如果这个项目对你有帮助，欢迎点个 Star，支持项目持续维护。
 
 ## 启动
 
