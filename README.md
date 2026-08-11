@@ -4,7 +4,7 @@ Banana Canvas 是一个免费开源、本地优先的 AI 无限画布。用户�
 
 它也可以作为一个 `open-source infinite canvas`、`local AI canvas` 和 `node-based image/video workflow` 使用。
 
-> 如果这个项目对你有帮助，欢迎点个 Star，支持项目持续维护。
+> 如果这个项目对你有帮助，欢迎前往 [GitHub 仓库](https://github.com/Mr-banananana/Banana_canvas) 点个 Star，支持项目持续维护。
 
 ## 核心特点
 
@@ -114,7 +114,7 @@ Windows 用户不需要安装 npm，不需要 `npm install`，也不需要命令
 
 ## 电商宣传图和产品视频
 
-左侧菜单可以进入电商宣传图和产品视频工作台。
+左侧电商入口可以进入电商宣传图工作台；左侧产品视频入口可以进入产品视频工作台。
 
 - 电商宣传图：上传商品图，可选上传模特图和场景图；可以使用 Agnes 自动生成单屏电商海报提示词，也可以手写提示词。
 - 产品宣传视频：上传产品图，填写镜头提示词和视频参数后生成宣传视频。
