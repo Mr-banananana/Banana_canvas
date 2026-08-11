@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <rect width="1280" height="720" fill="#0b0d0d"/>
+  <path d="M0 88H1280M0 176H1280M0 264H1280M0 352H1280M0 440H1280M0 528H1280M0 616H1280M88 0V720M176 0V720M264 0V720M352 0V720M440 0V720M528 0V720M616 0V720M704 0V720M792 0V720M880 0V720M968 0V720M1056 0V720M1144 0V720M1232 0V720" stroke="#18201d" stroke-width="1"/>
+  <rect x="36" y="32" width="160" height="656" rx="18" fill="#151a18" stroke="#303a35"/>
+  <rect x="250" y="146" width="300" height="214" rx="18" fill="#1b211f" stroke="#d7f33f" stroke-width="2"/>
+  <rect x="724" y="334" width="350" height="230" rx="18" fill="#1b211f" stroke="#d7f33f" stroke-width="2"/>
+  <path d="M550 252 C630 252 634 442 724 442" fill="none" stroke="#d7f33f" stroke-width="5"/>
+  <circle cx="550" cy="252" r="8" fill="#d7f33f"/><circle cx="724" cy="442" r="8" fill="#d7f33f"/>
+  <text x="78" y="108" fill="#d7f33f" font-family="Arial,sans-serif" font-size="30" font-weight="700">BANANA CANVAS</text>
+  <text x="300" y="258" fill="#f5f7f2" font-family="Arial,sans-serif" font-size="30" font-weight="700">Canvas Overview</text>
+  <text x="300" y="304" fill="#9aa69f" font-family="Arial,sans-serif" font-size="21">真实画布截图占位图</text>
+  <text x="770" y="446" fill="#f5f7f2" font-family="Arial,sans-serif" font-size="30" font-weight="700">Infinite Canvas</text>
+  <text x="770" y="492" fill="#9aa69f" font-family="Arial,sans-serif" font-size="21">待替换为产品界面截图</text>
+</svg>

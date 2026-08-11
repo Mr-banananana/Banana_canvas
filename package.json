@@ -2,7 +2,7 @@
   "name": "local-ai-canvas",
   "version": "1.0.0",
   "private": true,
-  "description": "Local infinite canvas for AI image and video asset generation.",
+  "description": "Free and open-source local AI infinite canvas for node-based image and video workflows.",
   "scripts": {
     "start": "node server.js",
     "test": "node work/canvas-engine.test.js && powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\work\\canvas-interaction-regression.ps1",

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <rect width="1280" height="720" fill="#0b0d0d"/>
+  <path d="M0 88H1280M0 176H1280M0 264H1280M0 352H1280M0 440H1280M0 528H1280M0 616H1280M88 0V720M176 0V720M264 0V720M352 0V720M440 0V720M528 0V720M616 0V720M704 0V720M792 0V720M880 0V720M968 0V720M1056 0V720M1144 0V720M1232 0V720" stroke="#18201d" stroke-width="1"/>
+  <rect x="116" y="186" width="284" height="214" rx="18" fill="#1b211f" stroke="#303a35" stroke-width="2"/>
+  <rect x="832" y="186" width="284" height="214" rx="18" fill="#1b211f" stroke="#d7f33f" stroke-width="2"/>
+  <path d="M400 293 C560 293 680 293 832 293" fill="none" stroke="#d7f33f" stroke-width="6"/>
+  <circle cx="400" cy="293" r="10" fill="#d7f33f"/><circle cx="832" cy="293" r="10" fill="#d7f33f"/>
+  <text x="174" y="268" fill="#f5f7f2" font-family="Arial,sans-serif" font-size="28" font-weight="700">Node Workflow</text>
+  <text x="174" y="314" fill="#9aa69f" font-family="Arial,sans-serif" font-size="21">输入端口 · 输出端口 · 连线</text>
+  <text x="890" y="268" fill="#f5f7f2" font-family="Arial,sans-serif" font-size="28" font-weight="700">Connected Nodes</text>
+  <text x="890" y="314" fill="#9aa69f" font-family="Arial,sans-serif" font-size="21">真实节点截图占位图</text>
+</svg>

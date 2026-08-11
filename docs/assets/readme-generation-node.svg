@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <rect width="1280" height="720" fill="#0b0d0d"/>
+  <rect x="82" y="72" width="1116" height="576" rx="24" fill="#151a18" stroke="#303a35"/>
+  <rect x="136" y="142" width="460" height="400" rx="20" fill="#1b211f" stroke="#303a35"/>
+  <rect x="684" y="142" width="460" height="400" rx="20" fill="#1b211f" stroke="#d7f33f" stroke-width="2"/>
+  <circle cx="366" cy="250" r="54" fill="#d7f33f" opacity=".18"/>
+  <path d="M340 250h52M366 224v52" stroke="#d7f33f" stroke-width="7" stroke-linecap="round"/>
+  <rect x="742" y="220" width="344" height="188" rx="14" fill="#2a332f"/>
+  <circle cx="914" cy="314" r="48" fill="#d7f33f" opacity=".18"/>
+  <path d="M890 314l17 17 34-40" fill="none" stroke="#d7f33f" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="178" y="468" fill="#f5f7f2" font-family="Arial,sans-serif" font-size="30" font-weight="700">Image and Video Generation</text>
+  <text x="178" y="514" fill="#9aa69f" font-family="Arial,sans-serif" font-size="21">图片、视频与 API 配置截图占位图</text>
+  <text x="726" y="468" fill="#f5f7f2" font-family="Arial,sans-serif" font-size="30" font-weight="700">Generated Asset</text>
+  <text x="726" y="514" fill="#9aa69f" font-family="Arial,sans-serif" font-size="21">真实生成结果截图待替换</text>
+</svg>

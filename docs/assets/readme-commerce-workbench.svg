@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <rect width="1280" height="720" fill="#0b0d0d"/>
+  <rect x="64" y="54" width="1152" height="612" rx="24" fill="#151a18" stroke="#303a35"/>
+  <rect x="112" y="112" width="430" height="494" rx="18" fill="#1b211f" stroke="#303a35"/>
+  <rect x="590" y="112" width="578" height="494" rx="18" fill="#1b211f" stroke="#d7f33f" stroke-width="2"/>
+  <rect x="154" y="178" width="346" height="156" rx="14" fill="#2a332f"/>
+  <rect x="154" y="370" width="346" height="152" rx="14" fill="#2a332f"/>
+  <rect x="632" y="166" width="230" height="176" rx="14" fill="#2a332f"/>
+  <rect x="890" y="166" width="230" height="176" rx="14" fill="#2a332f"/>
+  <rect x="632" y="382" width="230" height="176" rx="14" fill="#2a332f"/>
+  <rect x="890" y="382" width="230" height="176" rx="14" fill="#2a332f"/>
+  <text x="154" y="150" fill="#f5f7f2" font-family="Arial,sans-serif" font-size="27" font-weight="700">Commerce Workbench</text>
+  <text x="632" y="150" fill="#f5f7f2" font-family="Arial,sans-serif" font-size="27" font-weight="700">Temporary Asset Library</text>
+  <text x="154" y="578" fill="#9aa69f" font-family="Arial,sans-serif" font-size="21">电商工作台截图占位图</text>
+  <text x="632" y="578" fill="#9aa69f" font-family="Arial,sans-serif" font-size="21">结果流式布局截图待替换</text>
+</svg>
