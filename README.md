@@ -39,23 +39,17 @@ Banana Canvas 是一个免费开源、本地优先的 AI 无限画布。用户�
 
 ## 界面预览
 
-下面暂时使用占位图。真实截图准备好后，直接替换同名文件即可，不需要修改 README 链接。
-
 ### 无限画布总览
 
-![无限画布总览占位图](docs/assets/readme-canvas-overview.svg)
-
-### 节点连线工作流
-
-![节点连线工作流占位图](docs/assets/readme-node-workflow.svg)
-
-### 图片和视频生成节点
-
-![图片和视频生成节点占位图](docs/assets/readme-generation-node.svg)
+![Banana Canvas 无限画布工作台](docs/assets/readme-canvas-overview.png)
 
 ### 电商工作台和临时资产库
 
-![电商工作台占位图](docs/assets/readme-commerce-workbench.svg)
+![Banana Canvas 电商宣传图工作台](docs/assets/readme-commerce-workbench.png)
+
+### 产品视频工作台和临时资产库
+
+![Banana Canvas 产品视频工作台](docs/assets/readme-product-video-workbench.png)
 
 ## 启动
 
