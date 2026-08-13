@@ -4,11 +4,11 @@ Banana Canvas 是一个免费开源、本地优先的 AI 无限画布。用户�
 
 它也可以作为一个 `open-source infinite canvas`、`local AI canvas` 和 `node-based image/video workflow` 使用。
 
-> 如果这个项目对你有帮助，欢迎前往 [GitHub 仓库](https://github.com/Mr-banananana/Banana_canvas) 点个 Star，支持项目持续维护。
+> 如果这个项目对你有帮助，欢迎点个Star，支持项目持续维护。
 
 ## 核心特点
 
-- 免费开源，本地运行，不需要 Banana Canvas 云端账号。
+- 免费开源，本地运行，不需要云端账号。
 - 点阵无限画布、节点、输入输出端口和连线工作流。
 - 图片生成、视频生成、上传资产和结果资产管理。
 - 支持 Agnes AI，也支持用户填写自己的自定义多模态 API。
@@ -35,7 +35,7 @@ Banana Canvas 是一个免费开源、本地优先的 AI 无限画布。用户�
 | 平台 | Windows、macOS |
 | 部署 | 本地 Node.js 服务，无第三方 npm 依赖 |
 | 数据 | 当前浏览器本地存储和本地文件 |
-| 云端依赖 | 不需要 Banana Canvas 云端账号；生成请求依赖用户选择的 AI API |
+| 云端依赖 | 不需要云端账号；生成请求依赖用户选择的 AI API |
 
 ## 界面预览
 
@@ -124,53 +124,6 @@ Windows 用户不需要安装 npm，不需要 `npm install`，也不需要命令
 - 视频生成：`POST /v1/videos`
 - 默认视频模型：`agnes-video-v2.0`
 
-API Key 只保存在浏览器 `sessionStorage`，不会写入项目源码。生成请求会发送到用户在 API 设置中选择的 Agnes 或自定义 API。
-
-如果本机通过代理访问外网，`server.js` 会自动读取 `HTTPS_PROXY`/`HTTP_PROXY`。例如：
-
-```powershell
-$env:HTTPS_PROXY = "http://127.0.0.1:7892"
-npm start
-```
-
-## 发布到 GitHub 并公开使用
-
-这个项目包含 Node.js API 代理服务，不能只部署到 GitHub Pages。公开部署请使用 Render、Railway、Fly.io 或其他支持 Node.js 的服务。
-
-### 推荐：GitHub + Render
-
-1. 在 GitHub 创建公开仓库并上传项目。
-2. 登录 Render，选择 `New > Web Service`，连接 GitHub 仓库。
-3. 使用 `npm start` 作为启动命令，健康检查路径使用 `/healthz`。
-4. 部署完成后，打开服务地址，在页面右上角 `API 设置` 中填写自己的 Agnes API Key。
-
-项目已经包含 `render.yaml` 和 `Dockerfile`，可用于 Render 或其他支持 Node.js 的平台。
-
-### API Key 安全说明
-
-- 不要把 API Key 写入 README、源码、`.env` 或 GitHub Actions 日志。
-- 页面只把 API Key 保存在浏览器 `sessionStorage`，不会写入项目文件。
-- `server.js` 只在请求转发期间使用 API Key，不会持久化保存。
-- 公开部署后，生成请求会经过你部署的 Node 服务，再转发到用户选择的 AI API；公共实例应增加限流和访问控制。
-
-### GitHub Pages 的限制
-
-GitHub Pages 只能展示静态界面，不能直接完成 AI 生成。完整功能必须让页面和 `server.js` 部署在同一个 Node 服务域名下，或另外配置可访问的 API 代理。
-
-## 支持作者
-
-如果 Banana Canvas 对你有帮助，欢迎自愿支持后续维护。支持完全自愿，不影响软件使用，也不构成任何服务或功能承诺。
-
-也欢迎前往 [GitHub 仓库](https://github.com/Mr-banananana/Banana_canvas) 给项目点个 Star，帮助更多人发现和使用 Banana Canvas。
-
-支付宝：
-
-![支付宝收款二维码](public/assets/support-alipay.jpg)
-
-微信支付：
-
-![微信收款二维码](public/assets/support-wechat.jpg)
-
 ## 当前功能
 
 - 深色点阵无限画布和香蕉黄/绿色视觉主题。
@@ -189,14 +142,6 @@ GitHub Pages 只能展示静态界面，不能直接完成 AI 生成。完整功
 - 专业视频剪辑器或时间线编辑器。
 - 导演台或完整影视制作系统。
 - 多用户云端协作。
-- Banana Canvas 自带的云端账号和 AI 额度。
-
-## 隐私和安全
-
-- 不要把 API Key 写入 README、源码、`.env` 或 GitHub Actions 日志。
-- 页面只把 API Key 保存在浏览器 `sessionStorage`，不会写入项目文件。
-- `server.js` 只在请求转发期间使用 API Key，不会持久化保存。
-- 电商工作台中的上传图片和生成结果只在当前浏览器中读取和保存；生成请求仍会发送到用户选择的外部 AI API。
 
 ## 开源协议
 
