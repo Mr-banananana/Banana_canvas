@@ -61,7 +61,7 @@ npm start
 http://localhost:5177
 ```
 
-## 小白用户：下载后双击使用
+## Windows用户：下载后双击使用
 
 Windows 用户不需要安装 npm，不需要 `npm install`，也不需要命令行：
 
