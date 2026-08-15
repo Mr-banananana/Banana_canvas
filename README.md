@@ -70,9 +70,13 @@ Windows 用户不需要安装 npm，不需要 `npm install`，也不需要命令
 1. 在 GitHub 点击 `Code > Download ZIP` 并解压。
 2. 确认电脑安装了 Node.js 18 或更高版本；没有安装时，双击 `start.bat` 会自动打开官方安装页面。
 3. 双击项目根目录的 `start.bat`。
-4. 浏览器会自动打开 `http://localhost:5177/`，然后在右上角 `API 设置` 中填写自己的 Agnes API Key。
+4. 脚本确认服务健康后，会自动打开 `http://localhost:5177/`，然后在右上角 `API 设置` 中填写自己的 Agnes API Key。
 
-服务窗口需要保持打开；要停止服务，关闭名为 `Banana Canvas Server` 的窗口即可。PowerShell 用户也可以运行 `start.ps1`。
+- 启动入口：双击 `start.bat`
+- 退出入口：双击 `stop.bat`
+- 也可以在 `Banana Canvas Server` 窗口按 `Ctrl+C` 停止服务
+- 如果服务已经启动，再次双击 `start.bat` 会提示“已在运行”，不会重复启动
+- PowerShell 用户也可以运行 `start.ps1`
 
 项目没有第三方 npm 依赖，下载并解压后即可启动。
 

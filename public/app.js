@@ -2,6 +2,11 @@ const STORAGE_KEY = "local-ai-canvas-state-v2";
 const SETTINGS_KEY = "local-ai-canvas-settings-v1";
 const API_KEY_SESSION = "local-ai-canvas-api-key";
 const CANVAS_LIBRARY_SCHEMA = "banana-canvas-library-v1";
+const ASSET_DB_NAME = "banana-canvas-assets-v1";
+const ASSET_DB_VERSION = 1;
+const ASSET_STORE_NAME = "workspace-results";
+const ASSET_REF_PREFIX = "banana-asset://";
+const INLINE_ASSET_STORAGE_LIMIT = 256 * 1024;
 const SVG_OFFSET = 5000;
 const DRAG_EDGE_MARGIN = 84;
 const DRAG_EDGE_MAX_SPEED = 560;
@@ -47,7 +52,10 @@ const els = {
   productVideoAssetLibrary: document.getElementById("productVideoAssetLibrary"),
   productVideoAssetGrid: document.getElementById("productVideoAssetGrid"),
   productVideoAssetCount: document.getElementById("productVideoAssetCount"),
-  shortcutTool: document.getElementById("shortcutTool"),
+  assetPreviewModal: document.getElementById("assetPreviewModal"),
+  closeAssetPreview: document.getElementById("closeAssetPreview"),
+  assetPreviewTitle: document.getElementById("assetPreviewTitle"),
+  assetPreviewMedia: document.getElementById("assetPreviewMedia"),
   contextMenu: document.getElementById("contextMenu"),
   connectionCreateMenu: document.getElementById("connectionCreateMenu"),
   shortcutsModal: document.getElementById("shortcutsModal"),
@@ -71,6 +79,12 @@ const els = {
   statusBox: document.getElementById("statusBox"),
   resultBox: document.getElementById("resultBox"),
   settingsModal: document.getElementById("settingsModal"),
+  supportModal: document.getElementById("supportModal"),
+  closeSupport: document.getElementById("closeSupport"),
+  supportQrPreview: document.getElementById("supportQrPreview"),
+  closeSupportQrPreview: document.getElementById("closeSupportQrPreview"),
+  supportQrPreviewTitle: document.getElementById("supportQrPreviewTitle"),
+  supportQrPreviewImage: document.getElementById("supportQrPreviewImage"),
   provider: document.getElementById("provider"),
   apiKey: document.getElementById("apiKey"),
   imageModel: document.getElementById("imageModel"),
@@ -173,6 +187,7 @@ let canvasLibrary = {
   activeCanvasId: "canvas_default",
   canvases: []
 };
+let assetDatabasePromise = null;
 
 const settings = {
   provider: "agnes",
@@ -244,6 +259,88 @@ function uid(prefix = "card") {
 
 function cloneData(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function assetDatabaseAvailable() {
+  return typeof indexedDB !== "undefined";
+}
+
+function openAssetDatabase() {
+  if (!assetDatabaseAvailable()) return Promise.reject(new Error("IndexedDB unavailable"));
+  if (assetDatabasePromise) return assetDatabasePromise;
+  assetDatabasePromise = new Promise((resolve, reject) => {
+    const request = indexedDB.open(ASSET_DB_NAME, ASSET_DB_VERSION);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(ASSET_STORE_NAME)) request.result.createObjectStore(ASSET_STORE_NAME, { keyPath: "key" });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("IndexedDB open failed"));
+  }).catch(error => {
+    assetDatabasePromise = null;
+    throw error;
+  });
+  return assetDatabasePromise;
+}
+
+function assetRecordKey(canvasId, kind, resultId) {
+  return `${canvasId}:${kind}:${resultId}`;
+}
+
+function persistWorkspaceAsset(canvasId, kind, result) {
+  if (!assetDatabaseAvailable() || !canvasId || !result?.id || !result?.url) return;
+  openAssetDatabase().then(db => new Promise((resolve, reject) => {
+    const transaction = db.transaction(ASSET_STORE_NAME, "readwrite");
+    transaction.objectStore(ASSET_STORE_NAME).put({
+      key: assetRecordKey(canvasId, kind, result.id),
+      canvasId,
+      kind,
+      result: cloneData(result)
+    });
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error || new Error("IndexedDB write failed"));
+  })).catch(() => {});
+}
+
+function persistWorkspaceAssetsForCanvas(canvasId, commerceWorkspace, productVideoWorkspace) {
+  (commerceWorkspace?.results || []).forEach(result => persistWorkspaceAsset(canvasId, "commerce", result));
+  (productVideoWorkspace?.results || []).forEach(result => persistWorkspaceAsset(canvasId, "product-video", result));
+}
+
+function workspaceStorageSnapshot(workspace = {}) {
+  return {
+    ...workspace,
+    results: Array.isArray(workspace.results) ? workspace.results.map(result => {
+      const id = String(result?.id || uid("workspace-result"));
+      const url = String(result?.url || "");
+      return url.startsWith("data:") && url.length > INLINE_ASSET_STORAGE_LIMIT
+        ? { ...result, id, url: `${ASSET_REF_PREFIX}${id}` }
+        : { ...result, id };
+    }) : []
+  };
+}
+
+async function hydratePersistedWorkspaceAssets() {
+  if (!assetDatabaseAvailable()) return;
+  try {
+    const db = await openAssetDatabase();
+    const records = await new Promise((resolve, reject) => {
+      const transaction = db.transaction(ASSET_STORE_NAME, "readonly");
+      const request = transaction.objectStore(ASSET_STORE_NAME).getAll();
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error || new Error("IndexedDB read failed"));
+    });
+    records.forEach(record => {
+      const target = canvasStateFor(record.canvasId);
+      const workspace = record.kind === "product-video" ? target?.productVideoWorkspace : target?.commerceWorkspace;
+      const result = record.result;
+      if (!workspace || !result?.id || !result?.url) return;
+      const index = workspace.results.findIndex(item => item.id === result.id);
+      if (index >= 0) workspace.results[index] = { ...workspace.results[index], ...result };
+      else workspace.results.unshift(result);
+    });
+  } catch (error) {
+    console.warn("Temporary asset recovery unavailable; local URL snapshots will still be used.", error);
+  }
 }
 
 function canvasSnapshot() {
@@ -343,6 +440,7 @@ function createCanvasRecord(name = "未命名画布", source = {}) {
 
 function captureCurrentCanvas() {
   const existing = canvasLibrary.canvases.find(canvas => canvas.id === canvasLibrary.activeCanvasId) || {};
+  persistWorkspaceAssetsForCanvas(canvasLibrary.activeCanvasId, state.commerceWorkspace, state.productVideoWorkspace);
   return createCanvasRecord(existing.name || "未命名画布", {
     ...existing,
     id: canvasLibrary.activeCanvasId,
@@ -353,8 +451,8 @@ function captureCurrentCanvas() {
     canvasSnapshots: state.canvasSnapshots,
     viewport: state.viewport,
     workspaceMode: state.workspaceMode,
-    commerceWorkspace: state.commerceWorkspace,
-    productVideoWorkspace: state.productVideoWorkspace
+    commerceWorkspace: workspaceStorageSnapshot(state.commerceWorkspace),
+    productVideoWorkspace: workspaceStorageSnapshot(state.productVideoWorkspace)
   });
 }
 
@@ -1193,6 +1291,20 @@ function updateCardTransforms() {
     const node = cardNodes.get(card.id);
     if (node) node.style.transform = `translate3d(${card.x}px, ${card.y}px, 0)`;
   });
+  updateGroupTransforms();
+}
+
+function updateGroupTransforms() {
+  const cardsById = new Map(state.cards.map(card => [card.id, card]));
+  const groupsById = new Map(state.groups.map(group => [group.id, group]));
+  els.stage.querySelectorAll(".canvas-group[data-group-id]").forEach(groupNode => {
+    const bounds = groupBounds(groupsById.get(groupNode.dataset.groupId), cardsById);
+    if (!bounds) return;
+    groupNode.style.left = `${bounds.x}px`;
+    groupNode.style.top = `${bounds.y}px`;
+    groupNode.style.width = `${bounds.w}px`;
+    groupNode.style.height = `${bounds.h}px`;
+  });
 }
 
 function updateEdgeGeometry() {
@@ -1282,16 +1394,7 @@ function updateSelectionGeometry() {
     edgeNode.classList.toggle("selected", state.selectedEdgeId === id);
     edgeHitNodes.get(id)?.setAttribute("aria-pressed", String(state.selectedEdgeId === id));
   });
-  const cardsById = new Map(state.cards.map(card => [card.id, card]));
-  const groupById = new Map(state.groups.map(group => [group.id, group]));
-  els.stage.querySelectorAll(".canvas-group[data-group-id]").forEach(groupNode => {
-    const bounds = groupBounds(groupById.get(groupNode.dataset.groupId), cardsById);
-    if (!bounds) return;
-    groupNode.style.left = `${bounds.x}px`;
-    groupNode.style.top = `${bounds.y}px`;
-    groupNode.style.width = `${bounds.w}px`;
-    groupNode.style.height = `${bounds.h}px`;
-  });
+  updateGroupTransforms();
 }
 
 function renderAlignmentGuides(guides) {
@@ -1356,7 +1459,7 @@ function groupBounds(group, cardsById) {
   if (!cards.length) return null;
   const padding = 24;
   const left = Math.min(...cards.map(card => card.x)) - padding;
-  const top = Math.min(...cards.map(card => card.y)) - padding - 24;
+  const top = Math.min(...cards.map(card => card.y)) - padding - 40;
   const right = Math.max(...cards.map(card => card.x + card.w)) + padding;
   const bottom = Math.max(...cards.map(card => card.y + (card.layoutH ?? card.h))) + padding;
   return { x: left, y: top, w: right - left, h: bottom - top };
@@ -1367,6 +1470,7 @@ function renderCanvasGroups() {
     const bounds = groupBounds(group);
     if (!bounds) return "";
     return `<section class="canvas-group" data-group-id="${escapeAttr(group.id)}" style="left:${bounds.x}px;top:${bounds.y}px;width:${bounds.w}px;height:${bounds.h}px;border-color:${escapeAttr(group.color)}66;background:${escapeAttr(group.color)}0b">
+      <div class="canvas-group-drag-bar" data-group-drag="${escapeAttr(group.id)}" title="拖动整组" aria-label="拖动整组"><span class="canvas-group-drag-grip" aria-hidden="true">⠿</span></div>
       <div class="canvas-group-title"><input type="text" value="${escapeAttr(group.name)}" data-group-title="${escapeAttr(group.id)}" aria-label="分组名称"><button type="button" data-group-action="ungroup" data-group-id="${escapeAttr(group.id)}" title="取消分组">×</button></div>
       <span class="canvas-group-label">GROUP</span>
     </section>`;
@@ -1455,14 +1559,33 @@ function focusCard(id) {
   render();
 }
 
+function focusGroup(id) {
+  const group = state.groups.find(item => item.id === id);
+  const bounds = groupBounds(group);
+  if (!group || !bounds) return;
+  setSelected(group.memberIds);
+  const rect = els.viewport.getBoundingClientRect();
+  state.viewport.x = Math.round(rect.width / 2 - (bounds.x + bounds.w / 2) * state.viewport.scale);
+  state.viewport.y = Math.round(rect.height / 2 - (bounds.y + bounds.h / 2) * state.viewport.scale);
+  render();
+}
+
 function searchCards(query) {
   const value = String(query || "").trim().toLowerCase();
   if (!value) return [];
   return state.cards.filter(card => [card.title, card.prompt, card.type, card.resultUrl ? "资产" : ""].join(" ").toLowerCase().includes(value)).slice(0, 12);
 }
 
+function searchGroups(query) {
+  const value = String(query || "").trim().toLowerCase();
+  if (!value) return [];
+  return state.groups.filter(group => [group.name, "分组", "group"].join(" ").toLowerCase().includes(value)).slice(0, 12);
+}
+
 function renderSearchResults(query) {
-  const results = searchCards(query);
+  const cardResults = searchCards(query).map(card => ({ kind: "card", value: card }));
+  const groupResults = searchGroups(query).map(group => ({ kind: "group", value: group }));
+  const results = [...groupResults, ...cardResults].slice(0, 12);
   if (!els.canvasSearchResults) return;
   if (!String(query || "").trim()) {
     els.canvasSearchResults.classList.add("hidden");
@@ -1471,8 +1594,10 @@ function renderSearchResults(query) {
   }
   els.canvasSearchResults.classList.remove("hidden");
   els.canvasSearchResults.innerHTML = results.length
-    ? results.map(card => `<button type="button" data-search-card-id="${escapeAttr(card.id)}"><strong>${escapeHtml(card.title)}</strong><span>${escapeHtml(card.type)}${card.resultUrl ? " · 资产" : ""}</span></button>`).join("")
-    : `<div class="canvas-layer-empty">没有找到匹配节点</div>`;
+    ? results.map(result => result.kind === "group"
+      ? `<button type="button" data-search-group-id="${escapeAttr(result.value.id)}"><strong>${escapeHtml(result.value.name)}</strong><span>分组 · ${result.value.memberIds.length} 个节点</span></button>`
+      : `<button type="button" data-search-card-id="${escapeAttr(result.value.id)}"><strong>${escapeHtml(result.value.title)}</strong><span>${escapeHtml(result.value.type)}${result.value.resultUrl ? " · 资产" : ""}</span></button>`).join("")
+    : `<div class="canvas-layer-empty">没有找到匹配节点或分组</div>`;
 }
 
 function renderMinimap() {
@@ -1906,7 +2031,7 @@ function renderCommerceWorkspace() {
   els.commerceAssetGrid.innerHTML = workspace.results.length
     ? workspace.results.map(result => `
       <article class="commerce-asset-card" data-commerce-result-id="${escapeAttr(result.id)}">
-        <div class="commerce-asset-media"><img src="${escapeAttr(result.url)}" alt="电商宣传图" draggable="false">
+        <div class="commerce-asset-media commerce-asset-preview-trigger" role="button" tabindex="0" aria-label="查看电商宣传图原图" data-commerce-preview-open="${escapeAttr(result.id)}"><img src="${escapeAttr(result.url)}" alt="电商宣传图" draggable="false">
           <div class="commerce-asset-overlay"><button type="button" data-commerce-preview-action="add" data-commerce-result-id="${escapeAttr(result.id)}">加入画布</button><button type="button" data-commerce-preview-action="download" data-commerce-result-id="${escapeAttr(result.id)}">下载本地</button></div>
           <div class="commerce-asset-large"><img src="${escapeAttr(result.url)}" alt="电商宣传图大图" draggable="false"></div>
         </div>
@@ -1963,7 +2088,7 @@ function renderProductVideoWorkspace() {
   els.productVideoAssetGrid.innerHTML = workspace.results.length
     ? workspace.results.map(result => `
       <article class="commerce-asset-card product-video-asset-card" data-product-video-result-id="${escapeAttr(result.id)}">
-        <div class="commerce-asset-media"><video src="${escapeAttr(result.url)}" controls preload="metadata" playsinline></video>
+        <div class="commerce-asset-media commerce-asset-preview-trigger" role="button" tabindex="0" aria-label="查看产品宣传视频原片" data-product-video-preview-open="${escapeAttr(result.id)}"><video src="${escapeAttr(result.url)}" muted preload="metadata" playsinline disablepictureinpicture disableremoteplayback controlslist="nodownload noplaybackrate noremoteplayback"></video>
           <div class="commerce-asset-overlay"><button type="button" data-product-video-action="add" data-product-video-result-id="${escapeAttr(result.id)}">加入画布</button><button type="button" data-product-video-action="download" data-product-video-result-id="${escapeAttr(result.id)}">下载本地</button></div>
         </div>
         <div class="commerce-asset-meta"><strong>产品宣传视频</strong><span>${new Date(result.createdAt).toLocaleTimeString()}</span></div>
@@ -2091,7 +2216,13 @@ async function generateProductVideo() {
   const request = productVideoRequest(apiKey);
   const resultPrompt = request.prompt;
   try {
-    const created = await postJson("/api/agnes/video", request);
+    const created = await requestAgnesVideo(request, {
+      onQueueWait: ({ remainingSeconds, attempt, maxRetries }) => mutateCanvasById(originCanvasId, targetState => {
+        targetState.productVideoWorkspace.status = "running";
+        targetState.productVideoWorkspace.progress = 8;
+        targetState.productVideoWorkspace.error = videoQueueFullMessage(remainingSeconds, attempt, maxRetries);
+      }, renderProductVideoWorkspace)
+    });
     const response = created.response || {};
     const directUrl = response.url || response.video_url || response.result?.url;
     if (directUrl) {
@@ -2396,6 +2527,7 @@ function positionNodeDock(card) {
   const maxLeft = Math.max(margin, viewportRect.width - dockWidth - margin);
   const left = Math.min(Math.max(margin, rawLeft), maxLeft);
   const dockHeight = dockRect.height || 174;
+  const viewportBottom = viewportRect.height - margin;
   const otherCards = state.cards
     .filter(other => other.id !== card.id)
     .map(other => ({
@@ -2412,7 +2544,9 @@ function positionNodeDock(card) {
     });
     if (!collision) break;
     const otherBottom = collision.bottom;
-    top = otherBottom + gap;
+    const nextTop = otherBottom + gap;
+    if (nextTop + dockHeight > viewportBottom) break;
+    top = nextTop;
   }
 
   dock.style.left = `${Math.round(left)}px`;
@@ -2735,10 +2869,20 @@ function setupToolbar() {
   els.commerceWorkspaceGenerate.addEventListener("click", generateCommerceWorkspacePromo);
   els.commerceAssetGrid.addEventListener("click", event => {
     const action = event.target.closest("[data-commerce-preview-action]");
-    if (!action) return;
-    const id = action.dataset.commerceResultId;
-    if (action.dataset.commercePreviewAction === "add") addCommerceWorkspaceResultToCanvas(id);
-    if (action.dataset.commercePreviewAction === "download") downloadCommerceWorkspaceResult(id);
+    if (action) {
+      const id = action.dataset.commerceResultId;
+      if (action.dataset.commercePreviewAction === "add") addCommerceWorkspaceResultToCanvas(id);
+      if (action.dataset.commercePreviewAction === "download") downloadCommerceWorkspaceResult(id);
+      return;
+    }
+    const preview = event.target.closest("[data-commerce-preview-open]");
+    if (preview) openCommerceWorkspacePreview(preview.dataset.commercePreviewOpen);
+  });
+  els.commerceAssetGrid.addEventListener("keydown", event => {
+    const preview = event.target.closest("[data-commerce-preview-open]");
+    if (!preview || !["Enter", " "].includes(event.key)) return;
+    event.preventDefault();
+    openCommerceWorkspacePreview(preview.dataset.commercePreviewOpen);
   });
   document.querySelectorAll("[data-product-video-slot]").forEach(button => {
     button.addEventListener("click", event => {
@@ -2775,10 +2919,27 @@ function setupToolbar() {
   els.productVideoGenerate.addEventListener("click", generateProductVideo);
   els.productVideoAssetGrid.addEventListener("click", event => {
     const action = event.target.closest("[data-product-video-action]");
-    if (!action) return;
-    const id = action.dataset.productVideoResultId;
-    if (action.dataset.productVideoAction === "add") addProductVideoResultToCanvas(id);
-    if (action.dataset.productVideoAction === "download") downloadProductVideoResult(id);
+    if (action) {
+      const id = action.dataset.productVideoResultId;
+      if (action.dataset.productVideoAction === "add") addProductVideoResultToCanvas(id);
+      if (action.dataset.productVideoAction === "download") downloadProductVideoResult(id);
+      return;
+    }
+    const preview = event.target.closest("[data-product-video-preview-open]");
+    if (preview) openProductVideoPreview(preview.dataset.productVideoPreviewOpen);
+  });
+  els.productVideoAssetGrid.addEventListener("keydown", event => {
+    const preview = event.target.closest("[data-product-video-preview-open]");
+    if (!preview || !["Enter", " "].includes(event.key)) return;
+    event.preventDefault();
+    openProductVideoPreview(preview.dataset.productVideoPreviewOpen);
+  });
+  els.closeAssetPreview.addEventListener("click", closeAssetPreview);
+  els.assetPreviewModal.addEventListener("click", event => {
+    if (event.target === els.assetPreviewModal) closeAssetPreview();
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape" && !els.assetPreviewModal.classList.contains("hidden")) closeAssetPreview();
   });
   document.getElementById("paletteUpload").addEventListener("click", () => document.getElementById("uploadInput").click());
   document.getElementById("uploadInput").addEventListener("change", handleUpload);
@@ -2853,6 +3014,26 @@ function beginPendingCardDrag(card, event) {
   return true;
 }
 
+function beginPendingGroupDrag(group, event) {
+  const groupIds = group.memberIds.filter(id => findCard(id));
+  if (!groupIds.length || !interactionController.begin("pending-group-drag", { pointerId: event.pointerId, groupId: group.id })) return false;
+  beginHistoryTransaction("drag");
+  state.pendingDrag = {
+    id: group.id,
+    groupId: group.id,
+    groupIds,
+    groupDrag: true,
+    pointerId: event.pointerId,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    startWorld: clientToWorld(event.clientX, event.clientY),
+    shiftKey: event.shiftKey,
+    wasSelected: true,
+    selectionBefore: selectedIds()
+  };
+  return true;
+}
+
 function commitPendingDrag(event) {
   const pending = state.pendingDrag;
   if (!pending || event.pointerId !== pending.pointerId) return false;
@@ -2860,11 +3041,13 @@ function commitPendingDrag(event) {
   const dy = event.clientY - pending.startClientY;
   if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return false;
 
-  if (!pending.wasSelected) {
+  if (pending.groupDrag) {
+    setSelected(pending.groupIds);
+  } else if (!pending.wasSelected) {
     if (pending.shiftKey) toggleSelected(pending.id);
     else selectSingle(pending.id);
   }
-  const dragIds = selectedIds();
+  const dragIds = pending.groupDrag ? pending.groupIds : selectedIds();
   const cardsById = new Map(state.cards.map(card => [card.id, card]));
   const dragCards = dragIds.map(id => cardsById.get(id)).filter(Boolean);
   const idSet = new Set(dragIds);
@@ -2903,7 +3086,8 @@ function commitPendingDrag(event) {
 function commitPendingCardClick(event) {
   const pending = state.pendingDrag;
   if (!pending || event.pointerId !== pending.pointerId) return false;
-  if (pending.shiftKey) toggleSelected(pending.id);
+  if (pending.groupDrag) setSelected(pending.groupIds);
+  else if (pending.shiftKey) toggleSelected(pending.id);
   else selectSingle(pending.id);
   state.pendingDrag = null;
   interactionController.end(event.pointerId);
@@ -3135,6 +3319,16 @@ function setupCanvasEvents() {
       return;
     }
 
+    const groupDragBar = event.target.closest(".canvas-group-drag-bar");
+    if (groupDragBar) {
+      const group = state.groups.find(item => item.id === groupDragBar.dataset.groupDrag);
+      if (!group) return;
+      event.preventDefault();
+      if (!beginPendingGroupDrag(group, event)) return;
+      els.viewport.setPointerCapture(event.pointerId);
+      return;
+    }
+
     const cardEl = event.target.closest(".card");
     if (cardEl) {
       event.preventDefault();
@@ -3328,13 +3522,11 @@ function setupTopbar() {
 }
 
 function setupCanvasManagement() {
-  const toolsMenu = document.getElementById("canvasToolsMenu");
   const historyMenu = document.getElementById("historyMenu");
   const canvasLibraryMenu = els.canvasLibraryMenu;
   els.openCanvasLibrary.addEventListener("click", event => {
     event.stopPropagation();
     const opening = canvasLibraryMenu.classList.contains("hidden");
-    toolsMenu.classList.add("hidden");
     historyMenu.classList.add("hidden");
     canvasLibraryMenu.classList.toggle("hidden", !opening);
     els.openCanvasLibrary.setAttribute("aria-expanded", String(opening));
@@ -3348,28 +3540,6 @@ function setupCanvasManagement() {
   els.saveCanvas.addEventListener("click", () => { save(); closeCanvasLibrary(); });
   els.renameCanvas.addEventListener("click", renameActiveCanvas);
   els.deleteCanvas.addEventListener("click", deleteActiveCanvas);
-  document.getElementById("openCanvasTools").addEventListener("click", event => {
-    event.stopPropagation();
-    toolsMenu.classList.toggle("hidden");
-    historyMenu.classList.add("hidden");
-    closeCanvasLibrary();
-  });
-  document.getElementById("openHistory").addEventListener("click", event => {
-    event.stopPropagation();
-    historyMenu.classList.toggle("hidden");
-    toolsMenu.classList.add("hidden");
-    closeCanvasLibrary();
-    renderHistoryMenu();
-  });
-  document.getElementById("groupSelection").addEventListener("click", () => { groupSelectedCards(); toolsMenu.classList.add("hidden"); });
-  document.getElementById("ungroupSelection").addEventListener("click", () => { ungroupSelection(); toolsMenu.classList.add("hidden"); });
-  document.getElementById("autoLayout").addEventListener("click", () => { autoLayoutCards("selected"); toolsMenu.classList.add("hidden"); });
-  document.getElementById("autoLayoutAll").addEventListener("click", () => { autoLayoutCards("all"); toolsMenu.classList.add("hidden"); });
-  document.getElementById("toggleMinimap").addEventListener("click", () => {
-    document.getElementById("minimap").classList.toggle("hidden");
-    renderMinimap();
-    toolsMenu.classList.add("hidden");
-  });
   document.getElementById("undoCanvas").addEventListener("click", undoCanvas);
   document.getElementById("redoCanvas").addEventListener("click", redoCanvas);
   document.getElementById("createCanvasSnapshot").addEventListener("click", createCanvasSnapshot);
@@ -3379,9 +3549,11 @@ function setupCanvasManagement() {
   });
   els.canvasSearch.addEventListener("input", event => renderSearchResults(event.target.value));
   els.canvasSearchResults.addEventListener("click", event => {
-    const button = event.target.closest("[data-search-card-id]");
-    if (!button) return;
-    focusCard(button.dataset.searchCardId);
+    const cardButton = event.target.closest("[data-search-card-id]");
+    const groupButton = event.target.closest("[data-search-group-id]");
+    if (cardButton) focusCard(cardButton.dataset.searchCardId);
+    else if (groupButton) focusGroup(groupButton.dataset.searchGroupId);
+    else return;
     els.canvasSearchResults.classList.add("hidden");
   });
   const minimapCanvas = document.getElementById("minimapCanvas");
@@ -3390,9 +3562,6 @@ function setupCanvasManagement() {
   minimapCanvas.setAttribute("aria-label", "画布小地图，使用方向键导航");
   minimapCanvas.addEventListener("pointerdown", beginMinimapPan);
   minimapCanvas.addEventListener("keydown", handleMinimapKeydown);
-  els.stage.addEventListener("pointerdown", event => {
-    if (event.button === 0 && event.target.closest(".canvas-group-title")) event.stopPropagation();
-  });
   els.stage.addEventListener("click", event => {
     const action = event.target.closest("[data-group-action]");
     if (action?.dataset.groupAction === "ungroup") ungroupById(action.dataset.groupId);
@@ -3406,8 +3575,7 @@ function setupCanvasManagement() {
     scheduleLocalSave();
   });
   window.addEventListener("click", event => {
-    if (!event.target.closest(".canvas-tools-menu") && !event.target.closest("#openCanvasTools")) toolsMenu.classList.add("hidden");
-    if (!event.target.closest(".history-menu") && !event.target.closest("#openHistory")) historyMenu.classList.add("hidden");
+    if (!event.target.closest(".history-menu")) historyMenu.classList.add("hidden");
     if (!event.target.closest(".canvas-library-menu") && !event.target.closest("#openCanvasLibrary")) closeCanvasLibrary();
   });
   renderHistoryMenu();
@@ -3501,9 +3669,60 @@ function setupSettings() {
   els.settingsModal.addEventListener("click", event => { if (event.target === els.settingsModal) els.settingsModal.classList.add("hidden"); });
 }
 
+function closeSupportQrPreview() {
+  els.supportQrPreview.classList.add("hidden");
+  els.supportQrPreview.setAttribute("aria-hidden", "true");
+  els.supportQrPreviewImage.removeAttribute("src");
+}
+
+function closeSupport() {
+  closeSupportQrPreview();
+  els.supportModal.classList.add("hidden");
+  els.supportModal.setAttribute("aria-hidden", "true");
+}
+
+function openSupportQrPreview(image, title) {
+  els.supportQrPreviewTitle.textContent = title || "收款二维码";
+  els.supportQrPreviewImage.src = image;
+  els.supportQrPreview.classList.remove("hidden");
+  els.supportQrPreview.setAttribute("aria-hidden", "false");
+}
+
+function openSupport() {
+  hideContextMenu();
+  hideConnectionCreateMenu();
+  els.nodePalette.classList.add("hidden");
+  closeShortcuts();
+  els.settingsModal.classList.add("hidden");
+  els.supportModal.classList.remove("hidden");
+  els.supportModal.setAttribute("aria-hidden", "false");
+}
+
+function setupSupportModal() {
+  document.getElementById("openSupport").addEventListener("click", openSupport);
+  els.closeSupport.addEventListener("click", closeSupport);
+  els.supportModal.addEventListener("click", event => {
+    if (event.target === els.supportModal) closeSupport();
+    const card = event.target.closest("[data-support-image]");
+    if (card) openSupportQrPreview(card.dataset.supportImage, card.dataset.supportTitle);
+  });
+  els.closeSupportQrPreview.addEventListener("click", closeSupportQrPreview);
+  els.supportQrPreview.addEventListener("click", event => {
+    if (event.target === els.supportQrPreview) closeSupportQrPreview();
+  });
+}
+
 async function postJson(url, body, { flushLocalState = true } = {}) {
   if (flushLocalState) flushLocalSave();
-  const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  let response;
+  try {
+    response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  } catch (cause) {
+    const error = new Error("本地服务连接中断，请确认 Banana Canvas 服务仍在运行后重试。");
+    error.networkCode = cause?.cause?.code || cause?.code || "LOCAL_SERVICE_UNAVAILABLE";
+    error.retryable = true;
+    throw error;
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.error) {
     const message = data.error || `HTTP ${response.status}`;
@@ -3512,14 +3731,33 @@ async function postJson(url, body, { flushLocalState = true } = {}) {
     error.status = response.status;
     error.data = data;
     error.upstreamStatus = data.details?.status;
-    error.upstreamCode = data.details?.response?.error?.code || data.details?.response?.error?.type || "";
+    error.upstreamCode = data.upstreamCode || data.details?.response?.code || data.details?.response?.error?.code || data.details?.response?.error?.type || "";
     error.upstreamMessage = typeof data.details?.response === "string"
       ? data.details.response.trim()
       : data.details?.response?.error?.message || data.details?.response?.message || "";
+    error.networkCode = data.code || "";
+    error.retryable = Boolean(data.retryable);
+    error.retryAfterSeconds = Number(data.retryAfterSeconds || data.details?.retryAfterSeconds || 0) || 0;
     if (isUpstreamTimeout(error)) error.message = "Agnes 上游响应超时，请稍后重试。";
+    if (isUpstreamNetworkError(error)) error.message = upstreamNetworkMessage(error);
     throw error;
   }
   return data;
+}
+
+function isUpstreamNetworkError(error) {
+  const code = String(error?.networkCode || "");
+  const message = `${error?.message || ""} ${error?.upstreamMessage || ""}`;
+  return Boolean(error?.retryable) || /ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|socket hang up|网络连接被重置|暂时无法连接 Agnes/i.test(`${code} ${message}`);
+}
+
+function upstreamNetworkMessage(error) {
+  const code = String(error?.networkCode || "");
+  if (code === "ECONNRESET" || /网络连接被重置/i.test(String(error?.message || ""))) {
+    return "连接 Agnes 时出现网络波动，网络连接被重置。系统已自动重试；仍未成功，请稍后再次点击生成。";
+  }
+  if (code === "ETIMEDOUT") return "连接 Agnes 超时，系统已自动重试；仍未成功，请检查代理或网络后重试。";
+  return "暂时无法连接 Agnes，系统已自动重试；仍未成功，请检查网络或代理设置后重试。";
 }
 
 function isContentPolicyViolation(error) {
@@ -3547,6 +3785,49 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function isVideoQueueFullError(error) {
+  const message = `${error?.message || ""} ${error?.upstreamMessage || ""}`;
+  return error?.status === 503 && (
+    error?.upstreamCode === "video_queue_full" ||
+    /video_queue_full|video queue is full/i.test(message)
+  );
+}
+
+function videoQueueFullMessage(remainingSeconds, attempt, maxRetries) {
+  if (remainingSeconds > 0) {
+    return `Agnes 视频队列已满，${remainingSeconds} 秒后自动重试（${attempt}/${maxRetries}）。当前任务尚未创建，请不要重复点击。`;
+  }
+  return "Agnes 视频队列仍然繁忙，自动重试次数已用完。任务尚未创建，请稍后点击生成重试。";
+}
+
+function videoQueueRetryDelay(error, attempt) {
+  const hintedSeconds = Number(error?.retryAfterSeconds || 0);
+  if (hintedSeconds > 0) return Math.min(60000, Math.max(3000, hintedSeconds * 1000));
+  return [5000, 10000, 20000][attempt] || 20000;
+}
+
+async function requestAgnesVideo(body, { onQueueWait } = {}) {
+  const maxRetries = 3;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      return await postJson("/api/agnes/video", body);
+    } catch (error) {
+      if (!isVideoQueueFullError(error) || attempt >= maxRetries) {
+        if (isVideoQueueFullError(error)) error.message = videoQueueFullMessage(0, maxRetries, maxRetries);
+        throw error;
+      }
+      const delayMs = videoQueueRetryDelay(error, attempt);
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < delayMs) {
+        const remainingSeconds = Math.max(1, Math.ceil((delayMs - (Date.now() - startedAt)) / 1000));
+        onQueueWait?.({ remainingSeconds, attempt: attempt + 1, maxRetries });
+        await sleep(Math.min(1000, delayMs));
+      }
+    }
+  }
+  throw new Error("Agnes 视频队列繁忙，请稍后重试。");
+}
+
 function isRateLimitError(error) {
   const message = `${error.message || ""} ${error.upstreamMessage || ""}`;
   return error.status === 429 || error.upstreamStatus === 429 || /429|rate limit|too many/i.test(message);
@@ -3565,12 +3846,13 @@ async function requestAgnesPrompt(body) {
   try {
     return await postJson("/api/agnes/prompt", body);
   } catch (error) {
-    if (!isUpstreamTimeout(error)) throw error;
-    await sleep(1500);
+    if (!isUpstreamTimeout(error) && !isUpstreamNetworkError(error)) throw error;
+    await sleep(isUpstreamNetworkError(error) ? 1000 : 1500);
     try {
       return await postJson("/api/agnes/prompt", body);
     } catch (retryError) {
       if (isUpstreamTimeout(retryError)) retryError.message = upstreamTimeoutMessage();
+      if (isUpstreamNetworkError(retryError)) retryError.message = upstreamNetworkMessage(retryError);
       throw retryError;
     }
   }
@@ -3655,6 +3937,41 @@ async function downloadCommerceWorkspaceResult(id) {
     link.rel = "noreferrer";
     link.click();
   }
+}
+
+function assetPreviewIsVideo(url, mime) {
+  return String(mime || "").toLowerCase().startsWith("video/") || /\.(mp4|webm|mov|m4v)(?:[?#].*)?$/i.test(String(url || ""));
+}
+
+function openAssetPreview(url, mime, title) {
+  if (!url || !els.assetPreviewModal || !els.assetPreviewMedia) return;
+  const isVideo = assetPreviewIsVideo(url, mime);
+  els.assetPreviewTitle.textContent = title || (isVideo ? "原始视频" : "原始图片");
+  els.assetPreviewMedia.innerHTML = isVideo
+    ? `<video src="${escapeAttr(url)}" controls autoplay playsinline preload="metadata" disablepictureinpicture disableremoteplayback controlslist="nodownload noplaybackrate noremoteplayback"></video>`
+    : `<img src="${escapeAttr(url)}" alt="${escapeAttr(title || "原始图片")}">`;
+  els.assetPreviewModal.classList.remove("hidden");
+  els.assetPreviewModal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("asset-preview-open");
+  els.closeAssetPreview?.focus();
+}
+
+function closeAssetPreview() {
+  if (!els.assetPreviewModal) return;
+  els.assetPreviewMedia.replaceChildren();
+  els.assetPreviewModal.classList.add("hidden");
+  els.assetPreviewModal.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("asset-preview-open");
+}
+
+function openCommerceWorkspacePreview(id) {
+  const result = commerceWorkspaceResult(id);
+  if (result) openAssetPreview(result.url, result.mime, "电商宣传图原图");
+}
+
+function openProductVideoPreview(id) {
+  const result = productVideoResult(id);
+  if (result) openAssetPreview(result.url, result.mime || "video/mp4", "产品宣传视频原片");
 }
 
 function handleCommerceWorkspaceUpload(event) {
@@ -3827,6 +4144,16 @@ async function requestCommerceImage(request) {
   }
 }
 
+function stripPromptThinking(value) {
+  return String(value || "")
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/<analysis>[\s\S]*?<\/analysis>/gi, "")
+    .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, "")
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, "")
+    .replace(/^\s*(?:analysis|reasoning|thinking|思考过程|思考)\s*:\s*/i, "")
+    .trim();
+}
+
 function promptValueText(value, depth = 0) {
   if (depth > 5 || value == null) return "";
   if (typeof value === "string") {
@@ -3846,10 +4173,18 @@ function promptValueText(value, depth = 0) {
       .filter(Boolean)
       .join(" ")
       .trim();
-    return sseText || trimmed;
+    return sseText || stripPromptThinking(trimmed);
   }
-  if (Array.isArray(value)) return value.map(item => promptValueText(item, depth + 1)).filter(Boolean).join(" ").trim();
+  if (Array.isArray(value)) {
+    return value
+      .filter(item => !/(analysis|reason|think)/i.test(String(item?.type || "")))
+      .map(item => promptValueText(item, depth + 1))
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+  }
   if (typeof value !== "object") return "";
+  if (/(analysis|reason|think)/i.test(String(value.type || ""))) return "";
   const candidates = [
     value.text,
     value.value,
@@ -3861,7 +4196,6 @@ function promptValueText(value, depth = 0) {
     value.prompt,
     value.message?.content,
     value.message?.text,
-    value.reasoning_content,
     value.delta?.content,
     value.delta?.text,
     value.choices,
@@ -3881,7 +4215,6 @@ function promptResultText(data) {
   const candidates = [
     response?.choices?.[0]?.message?.content,
     response?.choices?.[0]?.text,
-    response?.choices?.[0]?.message?.reasoning_content,
     response?.output_text,
     response?.output,
     response?.data,
@@ -3913,6 +4246,9 @@ function promptResponseError(data) {
   const message = choice.message || {};
   const refusal = promptValueText(message.refusal || response.refusal);
   if (refusal) return `Agnes 拒绝了这次提示词请求：${refusal}`;
+  if (message.reasoning_content || response.reasoning_content) {
+    return "Agnes 只返回了思考过程，没有返回可用的最终提示词。请重试或切换支持多模态文本输出的提示词模型。";
+  }
   const finishReason = choice.finish_reason || response.finish_reason;
   if (finishReason && finishReason !== "stop") return `Agnes 返回了空文本（finish_reason: ${finishReason}）。请减少参考图或补充更明确的商品描述后重试。`;
   const fields = Object.keys(response).filter(key => key !== "request").slice(0, 12).join(", ") || "未知";
@@ -3920,10 +4256,10 @@ function promptResponseError(data) {
 }
 
 function cleanGeneratedPrompt(value) {
-  return String(value || "")
+  return stripPromptThinking(String(value || "")
     .replace(/^```(?:text|markdown)?\s*/i, "")
     .replace(/\s*```$/i, "")
-    .trim();
+  );
 }
 
 const PROMPT_VARIATIONS = [
@@ -4143,7 +4479,13 @@ async function generateAgnesImage(card, apiKey, prompt, originCanvasId) {
 
 async function generateAgnesVideo(card, apiKey, prompt, originCanvasId) {
   const { width, height } = parseSize(card.size);
-  const created = await postJson("/api/agnes/video", { apiKey, model: card.model || settings.videoModel, prompt, imageRefs: cardRefs(card), width, height, num_frames: card.num_frames || 121, frame_rate: card.frame_rate || 24, negative_prompt: card.negative_prompt, generate_audio: card.generate_audio });
+  const created = await requestAgnesVideo({ apiKey, model: card.model || settings.videoModel, prompt, imageRefs: cardRefs(card), width, height, num_frames: card.num_frames || 121, frame_rate: card.frame_rate || 24, negative_prompt: card.negative_prompt, generate_audio: card.generate_audio }, {
+    onQueueWait: ({ remainingSeconds, attempt, maxRetries }) => updateCard(card.id, {
+      status: "running",
+      progress: 8,
+      error: videoQueueFullMessage(remainingSeconds, attempt, maxRetries)
+    }, originCanvasId)
+  });
   const response = created.response || {};
   const task = { video_id: response.video_id, task_id: response.task_id || response.id };
   updateCard(card.id, { status: response.status || "queued", progress: response.progress || 12, task }, originCanvasId);
@@ -4423,6 +4765,7 @@ function showContextMenu(event) {
   const cardEl = event.target.closest(".card");
   if (cardEl && !isCardSelected(cardEl.dataset.id)) selectSingle(cardEl.dataset.id);
   state.contextWorld = clientToWorld(event.clientX, event.clientY);
+  syncContextSelectionActions();
   const menu = els.contextMenu;
   menu.classList.remove("hidden");
   const pad = 10;
@@ -4453,6 +4796,18 @@ function openNodePaletteAtContext() {
   hideContextMenu();
 }
 
+function syncContextSelectionActions() {
+  const ids = selectedIds();
+  const canGroup = ids.length >= 2;
+  const canUngroup = state.groups.some(group => group.memberIds.some(id => ids.includes(id)));
+  const container = document.getElementById("contextSelectionActions");
+  if (!container) return;
+  container.classList.toggle("hidden", !canGroup && !canUngroup);
+  document.getElementById("groupSelection")?.classList.toggle("hidden", !canGroup);
+  document.getElementById("autoLayout")?.classList.toggle("hidden", !canGroup);
+  document.getElementById("ungroupSelection")?.classList.toggle("hidden", !canUngroup);
+}
+
 function setupContextMenu() {
   document.addEventListener("contextmenu", event => {
     event.preventDefault();
@@ -4473,6 +4828,15 @@ function setupContextMenu() {
     if (action === "copy-all") { copyNodes("all"); hideContextMenu(); }
     if (action === "paste") pasteNodes();
     if (action === "delete") { deleteSelectedNode(); hideContextMenu(); }
+    if (action === "group-selected") { groupSelectedCards(); hideContextMenu(); }
+    if (action === "ungroup-selected") { ungroupSelection(); hideContextMenu(); }
+    if (action === "layout-selected") { autoLayoutCards("selected"); hideContextMenu(); }
+    if (action === "layout-all") { autoLayoutCards("all"); hideContextMenu(); }
+    if (action === "toggle-minimap") {
+      document.getElementById("minimap").classList.toggle("hidden");
+      renderMinimap();
+      hideContextMenu();
+    }
   });
   window.addEventListener("click", event => {
     if (state.suppressNextClick) {
@@ -4564,26 +4928,9 @@ function closeShortcuts() {
 
 function setupUtilityControls() {
   document.getElementById("openShortcuts").addEventListener("click", openShortcuts);
-  els.shortcutTool.addEventListener("click", openShortcuts);
   document.getElementById("closeShortcuts").addEventListener("click", closeShortcuts);
   els.shortcutsModal.addEventListener("click", event => {
     if (event.target === els.shortcutsModal) closeShortcuts();
-  });
-  document.getElementById("shortcutFit").addEventListener("click", () => {
-    closeShortcuts();
-    fitView();
-  });
-  document.getElementById("shortcutAddNode").addEventListener("click", () => {
-    closeShortcuts();
-    els.nodePalette.classList.remove("hidden");
-  });
-  document.getElementById("shortcutUpload").addEventListener("click", () => {
-    closeShortcuts();
-    document.getElementById("uploadInput").click();
-  });
-  document.getElementById("shortcutSettings").addEventListener("click", () => {
-    closeShortcuts();
-    document.getElementById("openSettings").click();
   });
 }
 
@@ -4595,6 +4942,7 @@ function setupKeyboardShortcuts() {
   window.addEventListener("keydown", event => {
     if (event.key === "Escape") {
       cancelCanvasInteraction();
+      closeSupport();
       closeShortcuts();
       hideContextMenu();
       hideConnectionCreateMenu();
@@ -4666,7 +5014,7 @@ function setupKeyboardShortcuts() {
     }
   });
 }
-function boot() {
+async function boot() {
   const fixtureMode = performanceFixtureMode();
   window.addEventListener("beforeunload", flushLocalSave);
   window.addEventListener("pagehide", flushLocalSave);
@@ -4680,6 +5028,7 @@ function boot() {
   setupUtilityControls();
   setupKeyboardShortcuts();
   setupSettings();
+  setupSupportModal();
   setupActions();
   bindInputs();
   if (fixtureMode) {
@@ -4687,6 +5036,7 @@ function boot() {
     if (!window.canvasPerformanceFixtureReady) render();
   } else {
     if (!state.cards.length) seedDemo();
+    await hydratePersistedWorkspaceAssets();
     if (state.workspaceMode === "commerce") setWorkspaceMode("commerce");
     else if (state.workspaceMode === "product-video") setWorkspaceMode("product-video");
     else render();
@@ -4695,19 +5045,3 @@ function boot() {
 }
 
 boot();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

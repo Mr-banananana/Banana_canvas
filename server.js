@@ -140,7 +140,25 @@ function proxyAuthHeaders(proxy) {
 }
 
 function requestHeaders(options = {}) {
-  return { ...(options.headers || {}) };
+  return { connection: "close", ...(options.headers || {}) };
+}
+
+function upstreamErrorCode(error) {
+  return error?.code || error?.cause?.code || error?.cause?.cause?.code || "NETWORK_ERROR";
+}
+
+function isTransientNetworkError(error) {
+  const code = upstreamErrorCode(error);
+  return new Set(["ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EAI_AGAIN", "ENOTFOUND"]).has(code) ||
+    /socket hang up|connection reset|network timeout|timed out/i.test(String(error?.message || ""));
+}
+
+function networkErrorMessage(code, attempts) {
+  const retryText = attempts > 1 ? `已自动重试 ${attempts - 1} 次仍未成功。` : "系统会在下一次请求时继续尝试。";
+  if (code === "ECONNRESET") return `Agnes 网络连接被重置。${retryText}请检查代理或网络连接后重试。`;
+  if (code === "ETIMEDOUT") return `连接 Agnes 超时。${retryText}请检查代理或网络连接后重试。`;
+  if (code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EAI_AGAIN") return `暂时无法连接 Agnes 服务（${code}）。${retryText}请检查网络或代理设置。`;
+  return `暂时无法连接 Agnes 上游。${retryText}请检查网络或代理设置。`;
 }
 
 function readResponse(response, resolve, reject) {
@@ -227,20 +245,47 @@ function requestThroughProxy(target, proxy, options, timeoutMs) {
   });
 }
 
-async function requestUpstream(url, options = {}, timeoutMs = 360000) {
+async function requestUpstream(url, options = {}, timeoutMs = 360000, { bypassProxy = false } = {}) {
   const target = new URL(url);
-  const proxy = proxyFor(target);
+  const proxy = bypassProxy ? null : proxyFor(target);
   return proxy ? requestThroughProxy(target, proxy, options, timeoutMs) : requestDirect(target, options, timeoutMs);
 }
 
-async function fetchJson(url, options, timeoutMs = 360000) {
+async function fetchJson(url, options, timeoutMs = 360000, retryOptions = {}) {
   let response;
-  try {
-    response = await requestUpstream(url, options, timeoutMs);
-  } catch (cause) {
-    const code = cause.code || cause.cause?.code || "NETWORK_ERROR";
-    const error = new Error(`无法连接 Agnes 上游（${code}）：${cause.message || "网络请求失败"}`);
-    error.cause = cause;
+  const networkRetries = Math.max(0, Number(retryOptions.networkRetries || 0));
+  const target = new URL(url);
+  const hasProxy = Boolean(proxyFor(target));
+  const directFallback = retryOptions.directFallback !== false && hasProxy;
+  const routes = [false, ...(directFallback ? [true] : []), ...Array(networkRetries).fill(false)];
+  let lastCause = null;
+  for (let routeIndex = 0; routeIndex < routes.length; routeIndex += 1) {
+    try {
+      response = await requestUpstream(url, options, timeoutMs, { bypassProxy: routes[routeIndex] });
+      lastCause = null;
+      break;
+    } catch (cause) {
+      lastCause = cause;
+      const hasNextRoute = routeIndex < routes.length - 1;
+      if (isTransientNetworkError(cause) && hasNextRoute) {
+        const nextIsDirectFallback = directFallback && routeIndex === 0;
+        const retryIndex = Math.max(0, routeIndex - (directFallback ? 1 : 0));
+        const delayMs = nextIsDirectFallback ? 0 : Math.min(4000, 700 * (2 ** retryIndex));
+        if (delayMs) await new Promise(resolve => setTimeout(resolve, delayMs));
+        continue;
+      }
+    }
+  }
+  if (!response) {
+    const code = upstreamErrorCode(lastCause);
+    const attempts = routes.length;
+    const error = new Error(isTransientNetworkError(lastCause)
+      ? networkErrorMessage(code, attempts)
+      : `无法连接 Agnes 上游（${code}）：${lastCause?.message || "网络请求失败"}`);
+    error.cause = lastCause;
+    error.networkCode = isTransientNetworkError(lastCause) ? code : "";
+    error.retryable = isTransientNetworkError(lastCause);
+    error.networkAttempts = attempts;
     throw error;
   }
   const contentType = String(response.headers["content-type"] || "");
@@ -257,6 +302,11 @@ async function fetchJson(url, options, timeoutMs = 360000) {
     const error = new Error("Upstream API request failed.");
     error.status = response.status;
     error.payload = { status: response.status, response: data };
+    error.upstreamCode = data && typeof data === "object"
+      ? String(data.code || data.error?.code || "")
+      : "";
+    error.retryAfterSeconds = Number(response.headers["retry-after"] || 0) || undefined;
+    error.retryable = error.status === 503 && error.upstreamCode === "video_queue_full";
     throw error;
   }
   return data;
@@ -388,7 +438,7 @@ async function handleAgnesPrompt(req, res) {
     method: "POST",
     headers: agnesHeaders(apiKey),
     body: JSON.stringify(body)
-  });
+  }, 360000, { networkRetries: 2, directFallback: true });
   sendJson(res, 200, { ok: true, provider: "agnes", request: body, response: data });
 }
 
@@ -439,7 +489,7 @@ async function handleAgnesVideoResult(req, res) {
   const data = await fetchJson(url, {
     method: "GET",
     headers: { "Authorization": `Bearer ${apiKey}` }
-  }, 120000);
+  }, 120000, { networkRetries: 2, directFallback: true });
   sendJson(res, 200, { ok: true, provider: "agnes", response: data });
 }
 
@@ -555,11 +605,28 @@ async function route(req, res) {
     const status = error.status || 500;
     sendJson(res, status, {
       error: error.message || "Internal server error.",
-      details: error.payload || null
+      details: error.payload || null,
+      code: error.networkCode || undefined,
+      retryable: error.retryable || undefined,
+      upstreamCode: error.upstreamCode || undefined,
+      retryAfterSeconds: error.retryAfterSeconds || undefined
     });
   }
 }
 
-http.createServer(route).listen(PORT, () => {
+const server = http.createServer(route);
+
+server.on("error", error => {
+  if (error.code === "EADDRINUSE") {
+    console.error(`[Banana Canvas] Port ${PORT} is already in use.`);
+    console.error("[Banana Canvas] Stop the existing service with stop.bat, then start again.");
+    process.exitCode = 1;
+    return;
+  }
+  console.error("[Banana Canvas] Server failed to start:", error.message);
+  process.exitCode = 1;
+});
+
+server.listen(PORT, () => {
   console.log(`Local AI Canvas running at http://localhost:${PORT}`);
 });

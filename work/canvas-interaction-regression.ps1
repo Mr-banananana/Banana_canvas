@@ -4,12 +4,15 @@ $html = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\public\index.
 $server = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\server.js')
 $package = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\package.json')
 $readme = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\README.md')
+$alipayAsset = Join-Path $PSScriptRoot '..\public\assets\support-alipay.jpg'
+$wechatAsset = Join-Path $PSScriptRoot '..\public\assets\support-wechat.jpg'
 $fixturePath = Join-Path $PSScriptRoot 'canvas-performance-fixture.js'
 $fixture = if (Test-Path $fixturePath) { Get-Content -Raw -LiteralPath $fixturePath } else { '' }
 $dockerfile = if (Test-Path (Join-Path $PSScriptRoot '..\Dockerfile')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\Dockerfile') } else { '' }
 $render = if (Test-Path (Join-Path $PSScriptRoot '..\render.yaml')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\render.yaml') } else { '' }
 $gitignore = if (Test-Path (Join-Path $PSScriptRoot '..\.gitignore')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\.gitignore') } else { '' }
 $startBat = if (Test-Path (Join-Path $PSScriptRoot '..\start.bat')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\start.bat') } else { '' }
+$stopBat = if (Test-Path (Join-Path $PSScriptRoot '..\stop.bat')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\stop.bat') } else { '' }
 $startPs1 = if (Test-Path (Join-Path $PSScriptRoot '..\start.ps1')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\start.ps1') } else { '' }
 $startCommand = if (Test-Path (Join-Path $PSScriptRoot '..\start.command')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\start.command') } else { '' }
 $startSh = if (Test-Path (Join-Path $PSScriptRoot '..\start.sh')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\start.sh') } else { '' }
@@ -1102,7 +1105,7 @@ $checks = @(
   @{
     Name = 'canvas engine and app scripts are cache busted together'
     Pass = $html -match 'canvas-engine\.js\?v=canvas-interactions-5' -and
-      $html -match 'app\.js\?v=canvas-interactions-5'
+      $html -match 'app\.js\?v=canvas-interactions-16'
   },
   @{
     Name = 'wheel modifiers route to horizontal pan vertical pan and zoom'
@@ -1311,8 +1314,8 @@ $checks = @(
   },
   @{
     Name = 'middle pan propagates through canvas controls and overlays'
-    Pass = $stagePointerGuardBlock -match 'event\.button === 0[\s\S]*?stopPropagation\(\)' -and
-      $connectionMenuPointerBlock -match 'event\.button === 0[\s\S]*?stopPropagation\(\)' -and
+    Pass = $connectionMenuPointerBlock -match 'event\.button === 0[\s\S]*?stopPropagation\(\)' -and
+      $app -match 'els\.viewport\.addEventListener\("pointerdown", event => \{[\s\S]*?if \(event\.button === 1\)' -and
       $beginMinimapBlock -match 'if \(event\.button !== 0\) return;[\s\S]*?event\.stopPropagation\(\)'
   },
   @{
@@ -1330,6 +1333,23 @@ $checks = @(
       $app -match 'gridSize:\s*16' -and
       $app -match 'thresholdPx:\s*6' -and
       $app -match 'drag\.origins\.forEach\([\s\S]*?origin\.x \+ snapped\.dx[\s\S]*?origin\.y \+ snapped\.dy'
+  },
+  @{
+    Name = 'group title dragging moves every group member'
+    Pass = $app -match 'function beginPendingGroupDrag\(group, event\)' -and
+      $app -match 'pending\.groupDrag' -and
+      $app -match 'pending\.groupIds' -and
+      $app -match 'const groupDragBar = event\.target\.closest\("\.canvas-group-drag-bar"\)' -and
+      $app -match 'beginPendingGroupDrag\(group, event\)' -and
+      $app -match 'data-group-drag=' -and
+      $styles -match '\.canvas-group-drag-bar\s*\{[\s\S]*?cursor:\s*grab' -and
+      $styles -match '\.canvas-group-drag-bar:active\s*\{[\s\S]*?cursor:\s*grabbing'
+  },
+  @{
+    Name = 'group frame geometry follows incremental node movement'
+    Pass = $app -match 'function updateGroupTransforms\(' -and
+      $app -match 'function updateCardTransforms\(\)[\s\S]*?updateGroupTransforms\(\)' -and
+      $app -match 'updateGroupTransforms\(\);'
   },
   @{
     Name = 'alignment guides render without intercepting input'
@@ -1506,7 +1526,7 @@ $checks = @(
     Pass = $app -match 'const edgeNodes = new Map\(\);' -and
       $app -match 'const selectedIdSet = new Set\(state\.selectedIds\);' -and
       $app -match 'const cardsById = new Map\(state\.cards\.map\(card => \[card\.id, card\]\)\);' -and
-      $app -match 'const groupById = new Map\(state\.groups\.map\(group => \[group\.id, group\]\)\);'
+      $app -match 'const groupsById = new Map\(state\.groups\.map\(group => \[group\.id, group\]\)\);'
   },
   @{
     Name = 'interaction updates avoid imported ID selector interpolation'
@@ -1630,6 +1650,11 @@ $checks = @(
       $app -notmatch 'const dockOverflow = top \+ dockHeight'
   },
   @{
+    Name = 'node dock does not jump below the viewport to avoid a neighbor'
+    Pass = $app -match 'const viewportBottom = viewportRect\.height - margin' -and
+      $app -match 'if \(nextTop \+ dockHeight > viewportBottom\) break;'
+  },
+  @{
     Name = 'node palette is positioned as a viewport overlay'
     Pass = $styles -match '\.node-palette\s*\{[\s\S]*position:\s*fixed' -or $app -match 'function positionNodePalette\('
   },
@@ -1677,6 +1702,13 @@ $checks = @(
       $readme -match '左侧.*产品视频.*产品视频'
   },
   @{
+    Name = 'operation instructions have one entry point without duplicate quick actions'
+    Pass = $html -notmatch 'id="shortcutTool"' -and
+      $shortcutsBlock -notmatch 'class="quick-actions"' -and
+      $shortcutsBlock -notmatch 'id="shortcut(AddNode|Upload|Fit|Settings)"' -and
+      $app -notmatch 'shortcutTool|shortcutAddNode|shortcutUpload|shortcutFit|shortcutSettings'
+  },
+  @{
     Name = 'canvas management persists groups and local snapshots'
     Pass = $app -match 'groups:' -and
       $app -match 'canvasSnapshots:' -and
@@ -1715,11 +1747,32 @@ $checks = @(
       $app -match 'data-group-id'
   },
   @{
+    Name = 'canvas tools move into the selection context menu'
+    Pass = $html -notmatch 'id="openCanvasTools"' -and
+      $html -notmatch 'id="openHistory"' -and
+      $html -match 'id="contextSelectionActions"' -and
+      $html -match 'data-action="group-selected"' -and
+      $html -match 'data-action="layout-selected"' -and
+      $html -match 'data-action="layout-all"' -and
+      $app -match 'function syncContextSelectionActions\(' -and
+      $app -match 'syncContextSelectionActions\(\)' -and
+      $app -match 'action === "group-selected"' -and
+      $app -match 'action === "toggle-minimap"'
+  },
+  @{
     Name = 'canvas exposes minimap and node search'
     Pass = $html -match 'id="canvasSearch"' -and
       $html -match 'id="minimapCanvas"' -and
       $app -match 'function renderMinimap\(' -and
       $app -match 'function focusCard\('
+  },
+  @{
+    Name = 'canvas search includes groups and focuses their bounds'
+    Pass = $html -match 'placeholder="搜索节点或分组"' -and
+      $app -match 'function searchGroups\(' -and
+      $app -match 'function focusGroup\(' -and
+      $app -match 'data-search-group-id' -and
+      $app -match 'focusGroup\(groupButton\.dataset\.searchGroupId\)'
   },
   @{
     Name = 'minimap is visible by default at a readable size'
@@ -1804,7 +1857,7 @@ $checks = @(
     Name = 'product video state is persisted and normalized'
     Pass = $app -match 'productVideoWorkspace:' -and
       $app -match 'normalizeProductVideoWorkspace' -and
-      $app -match 'productVideoWorkspace: state.productVideoWorkspace' -and
+      ($app -match 'productVideoWorkspace: state.productVideoWorkspace' -or $app -match 'productVideoWorkspace: workspaceStorageSnapshot\(state\.productVideoWorkspace\)' ) -and
       $app -match 'data.productVideoWorkspace'
   },
   @{
@@ -1936,6 +1989,23 @@ $checks = @(
       $styles -match '\.commerce-asset-card:hover \.commerce-asset-large'
   },
   @{
+    Name = 'temporary assets open original image and video previews'
+    Pass = $html -match 'id="assetPreviewModal"' -and
+      $html -match 'id="assetPreviewMedia"' -and
+      $app -match 'function openAssetPreview\(' -and
+      $app -match 'data-commerce-preview-open' -and
+      $app -match 'data-product-video-preview-open' -and
+      $app -match 'controls autoplay playsinline' -and
+      $app -match 'closeAssetPreview'
+  },
+  @{
+    Name = 'video thumbnails suppress native media hover controls'
+    Pass = $html -match 'app\.js\?v=canvas-interactions-16' -and
+      $styles -match '\.commerce-asset-media\s*>\s*video\s*\{[\s\S]*?pointer-events:\s*none' -and
+      $app -match 'disablepictureinpicture' -and
+      $app -match 'disableremoteplayback'
+  },
+  @{
     Name = 'server routes Agnes requests through the configured HTTPS proxy'
     Pass = $server -match 'HTTPS_PROXY' -and
       $server -match 'CONNECT' -and
@@ -2002,11 +2072,45 @@ $checks = @(
     Name = 'Agnes prompt 504s retry once and show a readable timeout error'
     Pass = $app -match 'function isUpstreamTimeout\(' -and
       $app -match 'function requestAgnesPrompt\(' -and
-      $app -match 'await sleep\(1[0-9]{3}\)' -and
+      $app -match 'await sleep\(' -and
+      $app -match '1500' -and
       $app -match 'isUpstreamTimeout\(error\)' -and
       $app -match 'if \(isUpstreamTimeout\(error\)\) error\.message' -and
       $app -match '上游响应超时' -and
       $app -match 'typeof data\.details\?\.response === "string"'
+  },
+  @{
+    Name = 'Agnes network resets retry safely and use readable errors'
+    Pass = $server -match 'function isTransientNetworkError\(' -and
+      $server -match 'bypassProxy' -and
+      $server -match 'directFallback' -and
+      $server -match 'requestUpstream\([^)]*\{ bypassProxy' -and
+      $server -match 'ECONNRESET' -and
+      $server -match 'networkRetries' -and
+      $server -match 'networkCode' -and
+      $server -match 'retryable' -and
+      $app -match 'function isUpstreamNetworkError\(' -and
+      $app -match '连接 Agnes.*网络波动' -and
+      $app -match 'isUpstreamNetworkError\(error\)'
+  },
+  @{
+    Name = 'Agnes video queue saturation retries only rejected jobs and explains the wait'
+    Pass = $server -match 'video_queue_full' -and
+      $server -match 'retryAfterSeconds' -and
+      $app -match 'function isVideoQueueFullError\(' -and
+      $app -match 'function requestAgnesVideo\(' -and
+      $app -match 'video_queue_full' -and
+      $app -match 'onQueueWait' -and
+      $app -match '不要重复点击'
+  },
+  @{
+    Name = 'temporary workspace assets persist outside the canvas localStorage snapshot'
+    Pass = $app -match 'ASSET_DB_NAME' -and
+      $app -match 'indexedDB\.open' -and
+      $app -match 'function persistWorkspaceAssetsForCanvas\(' -and
+      $app -match 'function hydratePersistedWorkspaceAssets\(' -and
+      $app -match 'function workspaceStorageSnapshot\(' -and
+      $app -match 'await hydratePersistedWorkspaceAssets\(\)'
   },
   @{
     Name = 'Agnes empty prompt responses expose refusal and finish diagnostics'
@@ -2017,12 +2121,23 @@ $checks = @(
       $app -match '响应字段'
   },
   @{
+    Name = 'Agnes prompt parser excludes model reasoning from the textarea'
+    Pass = $app -match 'function stripPromptThinking\(' -and
+      $app -match '<think>\[\\s\\S\]\*\?<\\/think>' -and
+      $app -match '<analysis>\[\\s\\S\]\*\?<\\/analysis>' -and
+      $app -notmatch 'value\.reasoning_content,\s*value\.delta'
+  },
+  @{
     Name = 'prompt fixes are cache-busted in the served page'
-    Pass = $html -match 'app\.js\?v=canvas-interactions-5' -and $html -match 'styles\.css\?v=canvas-controls-9'
+    Pass = $html -match 'app\.js\?v=canvas-interactions-16' -and $html -match 'styles\.css\?v=canvas-controls-15'
   },
   @{
     Name = 'server exposes a deployment health endpoint'
     Pass = $server -match 'url\.pathname === "/healthz"' -and $server -match 'status: "ok"'
+  },
+  @{
+    Name = 'server explains a port conflict without an unhandled stack trace'
+    Pass = $server -match 'server\.on\("error"' -and $server -match 'EADDRINUSE' -and $server -match 'stop\.bat'
   },
   @{
     Name = 'repository includes a production container entrypoint'
@@ -2041,8 +2156,44 @@ $checks = @(
     Pass = $readme -match 'Render' -and $readme -match 'Docker' -and $readme -match 'API Key' -and $readme -match 'GitHub Pages'
   },
   @{
+    Name = 'author support entry uses local payment images and modal controls'
+    Pass = $html -match 'id="openSupport"' -and
+      $html -match 'id="supportModal"' -and
+      $html -match '/assets/support-alipay\.jpg' -and
+      $html -match '/assets/support-wechat\.jpg' -and
+      $html -match 'id="supportGithubLink"' -and
+      $html -match 'href="https://github\.com/Mr-banananana/Banana_canvas"' -and
+      $html -match 'target="_blank"' -and
+      $app -match 'function setupSupportModal\(' -and
+      $app -match 'closeSupport' -and
+      $styles -match '\.support-modal' -and
+      (Test-Path $alipayAsset) -and
+      (Test-Path $wechatAsset)
+  },
+  @{
+    Name = 'README explains voluntary author support'
+    Pass = $readme -match '支持作者' -and
+      $readme -match '自愿支持' -and
+      $readme -match 'support-alipay\.jpg' -and
+      $readme -match 'support-wechat\.jpg' -and
+      $readme -match 'Mr-banananana/Banana_canvas' -and
+      $readme -match 'Star'
+  },
+  @{
     Name = 'Windows starter launches the local server and browser'
     Pass = $startBat -match 'node server\.js' -and $startBat -match 'localhost:5177' -and $startBat -match 'where node'
+  },
+  @{
+    Name = 'Windows starter detects an existing server before launching'
+    Pass = $startBat -match 'netstat' -and $startBat -match 'LISTENING' -and $startBat -match 'already running'
+  },
+  @{
+    Name = 'Windows starter reports readiness before opening the browser'
+    Pass = $startBat -match '/healthz' -and $startBat -match 'Service is ready'
+  },
+  @{
+    Name = 'Windows stop entry stops the server and reports the result'
+    Pass = $stopBat -match 'netstat' -and $stopBat -match '5177' -and $stopBat -match 'taskkill' -and $stopBat -match 'stopped'
   },
   @{
     Name = 'PowerShell starter works without npm installation'

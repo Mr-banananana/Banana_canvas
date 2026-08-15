@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Banana Canvas</title>
-    <link rel="stylesheet" href="/styles.css?v=canvas-controls-9">
+    <link rel="stylesheet" href="/styles.css?v=canvas-controls-15">
   </head>
   <body>
     <div class="app">
@@ -44,18 +44,9 @@
             </nav>
           </div>
           <div class="canvas-search-wrap">
-            <input id="canvasSearch" type="search" placeholder="搜索节点" aria-label="搜索节点">
+            <input id="canvasSearch" type="search" placeholder="搜索节点或分组" aria-label="搜索节点或分组">
             <div id="canvasSearchResults" class="canvas-search-results hidden"></div>
           </div>
-          <button id="openCanvasTools" class="text-btn">画布工具</button>
-          <nav id="canvasToolsMenu" class="canvas-tools-menu hidden" aria-label="画布工具">
-            <button id="groupSelection" type="button">新建分组 <span>Ctrl+G</span></button>
-            <button id="ungroupSelection" type="button">取消分组</button>
-            <hr>
-            <button id="autoLayout" type="button">整理所选节点</button>
-            <button id="autoLayoutAll" type="button">整理全部节点</button>
-            <button id="toggleMinimap" type="button">显示/隐藏小地图</button>
-          </nav>
           <nav id="historyMenu" class="history-menu hidden" aria-label="历史记录">
             <button id="undoCanvas" type="button">撤销 <span>Ctrl+Z</span></button>
             <button id="redoCanvas" type="button">重做 <span>Ctrl+Shift+Z</span></button>
@@ -63,13 +54,13 @@
             <button id="createCanvasSnapshot" type="button">保存历史快照</button>
             <div id="canvasSnapshotList" class="canvas-snapshot-list"></div>
           </nav>
-          <button id="openHistory" class="text-btn">历史</button>
           <button id="openShortcuts" class="text-btn">操作说明</button>
           <button id="exportJson" class="text-btn">导出</button>
           <label class="text-btn file-label">
             导入
             <input id="importJson" type="file" accept="application/json">
           </label>
+          <button id="openSupport" class="text-btn support-btn" type="button">支持作者</button>
           <button id="openSettings" class="primary-btn">API 设置</button>
         </div>
       </header>
@@ -80,7 +71,6 @@
           <button class="tool return-canvas-tool active" id="returnCanvasTool" data-tool="canvas" title="返回画布">⌂<span>画布</span></button>
           <button class="tool commerce-tool" id="commerceTool" data-tool="commerce" title="电商工作台">🍌<span>电商</span></button>
           <button class="tool commerce-tool video-tool" id="productVideoTool" data-tool="product-video" title="产品视频">▶<span>产品视频</span></button>
-          <button class="tool" id="shortcutTool" title="操作说明">?</button>
           <input id="uploadInput" type="file" accept="image/*,video/*" multiple>
         </aside>
 
@@ -97,6 +87,14 @@
           <nav id="contextMenu" class="context-menu hidden" aria-label="右键菜单">
             <button data-action="upload"><strong>上传</strong></button>
             <button data-action="add"><strong>添加节点</strong></button>
+            <hr>
+            <div id="contextSelectionActions" class="context-selection-actions hidden">
+              <button id="groupSelection" data-action="group-selected"><strong>新建分组</strong><span>Ctrl+G</span></button>
+              <button id="ungroupSelection" data-action="ungroup-selected"><strong>取消分组</strong></button>
+              <button id="autoLayout" data-action="layout-selected"><strong>整理所选节点</strong></button>
+            </div>
+            <button id="autoLayoutAll" data-action="layout-all"><strong>整理全部节点</strong></button>
+            <button id="toggleMinimap" data-action="toggle-minimap"><strong>显示/隐藏小地图</strong></button>
             <hr>
             <button data-action="copy-selected"><strong>复制所选节点</strong><span>Ctrl+C</span></button>
             <button data-action="copy-all"><strong>复制所有节点</strong></button>
@@ -270,6 +268,19 @@
       </main>
     </div>
 
+    <div id="assetPreviewModal" class="modal-backdrop asset-preview-modal hidden" aria-hidden="true">
+      <section class="asset-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="assetPreviewTitle">
+        <div class="asset-preview-head">
+          <div>
+            <span class="workflow-kicker">ORIGINAL ASSET</span>
+            <h2 id="assetPreviewTitle">原始资产</h2>
+          </div>
+          <button id="closeAssetPreview" class="icon-btn" type="button" aria-label="关闭原始资产预览">×</button>
+        </div>
+        <div id="assetPreviewMedia" class="asset-preview-media"></div>
+      </section>
+    </div>
+
     <div id="settingsModal" class="modal-backdrop hidden">
       <section class="modal">
         <div class="modal-head">
@@ -354,6 +365,47 @@
       </section>
     </div>
 
+    <div id="supportModal" class="modal-backdrop hidden" aria-hidden="true">
+      <section class="support-modal" role="dialog" aria-modal="true" aria-labelledby="supportTitle">
+        <div class="modal-head">
+          <div>
+            <span class="workflow-kicker">KEEP BANANA CANVAS GROWING</span>
+            <h2 id="supportTitle">支持作者</h2>
+            <p>如果这个项目对你有帮助，欢迎自愿支持后续维护。</p>
+          </div>
+          <button id="closeSupport" class="icon-btn" type="button" aria-label="关闭支持作者">×</button>
+        </div>
+        <p class="support-note">支持完全自愿，不影响软件使用，也不构成任何服务或功能承诺。</p>
+        <a id="supportGithubLink" class="support-github-link" href="https://github.com/Mr-banananana/Banana_canvas" target="_blank" rel="noopener noreferrer">
+          <span class="support-github-mark" aria-hidden="true">★</span>
+          <span><strong>去 GitHub 给项目点个 Star</strong><small>你的 Star 会帮助更多人发现 Banana Canvas</small></span>
+          <span class="support-github-arrow" aria-hidden="true">↗</span>
+        </a>
+        <div class="support-qr-grid">
+          <button class="support-qr-card" type="button" data-support-image="/assets/support-alipay.jpg" data-support-title="支付宝支持">
+            <span class="support-qr-label"><strong>支付宝</strong><small>扫码支持作者</small></span>
+            <img src="/assets/support-alipay.jpg" alt="支付宝收款二维码">
+            <span class="support-qr-hint">点击查看大图</span>
+          </button>
+          <button class="support-qr-card" type="button" data-support-image="/assets/support-wechat.jpg" data-support-title="微信支持">
+            <span class="support-qr-label"><strong>微信支付</strong><small>扫码支持作者</small></span>
+            <img src="/assets/support-wechat.jpg" alt="微信收款二维码">
+            <span class="support-qr-hint">点击查看大图</span>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <div id="supportQrPreview" class="modal-backdrop support-qr-preview hidden" aria-hidden="true">
+      <section class="support-qr-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="supportQrPreviewTitle">
+        <div class="support-qr-preview-head">
+          <h2 id="supportQrPreviewTitle">收款二维码</h2>
+          <button id="closeSupportQrPreview" class="icon-btn" type="button" aria-label="关闭二维码大图">×</button>
+        </div>
+        <img id="supportQrPreviewImage" src="" alt="收款二维码大图">
+      </section>
+    </div>
+
     <div id="shortcutsModal" class="modal-backdrop hidden">
       <section class="shortcuts-modal" aria-labelledby="shortcutsTitle">
         <button id="closeShortcuts" class="shortcut-close" aria-label="关闭操作说明">×</button>
@@ -364,13 +416,6 @@
           </div>
           <span class="mode-pill">画布模式</span>
         </header>
-
-        <div class="quick-actions" aria-label="快速操作">
-          <button type="button" id="shortcutAddNode"><strong>添加节点</strong><span>打开节点面板</span></button>
-          <button type="button" id="shortcutUpload"><strong>上传资源</strong><span>图片 / 视频</span></button>
-          <button type="button" id="shortcutFit"><strong>适配画布</strong><span>查看全部节点</span></button>
-          <button type="button" id="shortcutSettings"><strong>API 设置</strong><span>填写 Key</span></button>
-        </div>
 
         <div class="shortcut-grid">
           <section>
@@ -423,7 +468,7 @@
       })();
     </script>
     <script src="/canvas-engine.js?v=canvas-interactions-5"></script>
-    <script src="/app.js?v=canvas-interactions-5"></script>
+    <script src="/app.js?v=canvas-interactions-16"></script>
   </body>
 </html>
 
