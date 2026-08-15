@@ -145,6 +145,22 @@ Windows 用户不需要安装 npm，不需要 `npm install`，也不需要命令
 - 导演台或完整影视制作系统。
 - 多用户云端协作。
 
+## 公开部署
+
+本项目默认本地运行。公开部署时请使用支持 Node.js 的服务，例如 Render，并保留项目中的 `Dockerfile` 配置；不能只部署到 GitHub Pages，因为 AI 请求需要由 Node.js 服务代理。
+
+公开部署后，用户填写的 API Key 会经由你部署的服务转发到用户选择的 AI API。请按需增加访问控制、限流和 HTTPS，不要在服务端保存用户的 API Key、提示词或图片。
+
+## 支持作者
+
+Banana Canvas 免费开源。如果项目对你有帮助，欢迎前往 [GitHub 仓库](https://github.com/Mr-banananana/Banana_canvas) 点个 Star，帮助更多人发现这个项目。
+
+这是自愿支持，不影响软件使用：
+
+![支付宝收款二维码](public/assets/support-alipay.jpg)
+
+![微信收款二维码](public/assets/support-wechat.jpg)
+
 ## 开源协议
 
 本项目使用 [MIT License](LICENSE)。
