@@ -2,8 +2,6 @@
 
 Banana Canvas 是一个免费开源、本地优先的 AI 无限画布。用户可以通过节点、输入输出端口和连线组织图片、视频与文本资产，并接入 Agnes 或自己的多模态 API，构建本地 AI 图片和视频工作流。
 
-它也可以作为一个 `open-source infinite canvas`、`local AI canvas` 和 `node-based image/video workflow` 使用。
-
 > 如果这个项目对你有帮助，欢迎点个Star，支持项目持续维护。
 
 ## 核心特点
