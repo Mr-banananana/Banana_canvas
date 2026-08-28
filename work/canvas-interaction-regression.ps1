@@ -2131,6 +2131,13 @@ $checks = @(
       $server -match 'num_frames: normalizeVideoFrameCount\(payload\.num_frames'
   },
   @{
+    Name = 'API key starts empty and requires user input'
+    Pass = $app -match 'function getApiKey\(\) \{\s*return sessionStorage\.getItem\(API_KEY_SESSION\) \|\| "";' -and
+      $html -match '首次使用请填写自己的 API Key' -and
+      $app -notmatch 'sk-[A-Za-z0-9]{20,}' -and
+      $server -notmatch 'sk-[A-Za-z0-9]{20,}'
+  },
+  @{
     Name = 'temporary workspace assets persist outside the canvas localStorage snapshot'
     Pass = $app -match 'ASSET_DB_NAME' -and
       $app -match 'indexedDB\.open' -and
