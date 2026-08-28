@@ -37,6 +37,14 @@ function sendJson(res, status, payload) {
   send(res, status, JSON.stringify(payload), JSON_HEADERS);
 }
 
+function normalizeVideoFrameCount(value, fallback = 121) {
+  const fallbackNumber = Number(fallback);
+  const safeFallback = Number.isFinite(fallbackNumber) && fallbackNumber > 0 ? fallbackNumber : 121;
+  const candidate = Number(value);
+  const raw = Number.isFinite(candidate) && candidate > 0 ? candidate : safeFallback;
+  return Math.max(1, Math.round((raw - 1) / 8) * 8 + 1);
+}
+
 function isLoopbackRequest(req) {
   let hostname = "";
   try {
@@ -458,7 +466,7 @@ async function handleAgnesVideo(req, res) {
     image: imageRefs.length === 1 ? imageRefs[0] : undefined,
     width: Number(payload.width || 1152),
     height: Number(payload.height || 768),
-    num_frames: Number(payload.num_frames || 121),
+    num_frames: normalizeVideoFrameCount(payload.num_frames, 121),
     frame_rate: Number(payload.frame_rate || 24),
     negative_prompt: payload.negative_prompt || undefined,
     generate_audio: typeof payload.generate_audio === "boolean" ? payload.generate_audio : undefined,

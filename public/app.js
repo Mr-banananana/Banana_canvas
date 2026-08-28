@@ -765,11 +765,12 @@ function normalizeCard(card) {
   card.imageQuality = card.imageQuality || "medium";
   card.imageResolution = card.imageResolution || (card.type === "commerce" ? "2k" : "1k");
   card.videoResolution = card.videoResolution || "720p";
+  card.frame_rate = Number(card.frame_rate || 24);
+  if (!Number.isFinite(card.frame_rate) || card.frame_rate <= 0) card.frame_rate = 24;
   card.duration = Number(card.duration || Math.max(4, Math.round((Number(card.num_frames || 121) - 1) / Number(card.frame_rate || 24))) || 5);
   card.generate_audio = typeof card.generate_audio === "boolean" ? card.generate_audio : true;
   card.size = card.size || (card.type === "video" ? sizeForVideo(card.aspect, card.videoResolution) : sizeForImage(card.aspect, card.imageResolution));
-  card.num_frames = Number(card.num_frames || durationToFrames(card.duration, card.frame_rate || 24));
-  card.frame_rate = Number(card.frame_rate || 24);
+  card.num_frames = normalizeVideoFrameCount(card.num_frames || durationToFrames(card.duration, card.frame_rate), durationToFrames(card.duration, card.frame_rate));
   card.negative_prompt = card.negative_prompt || "";
   card.productRef = normalizeCommerceRef(card.productRef);
   card.modelRef = normalizeCommerceRef(card.modelRef);
@@ -1182,8 +1183,21 @@ function sizeForVideo(aspectId = "auto", resolutionId = "720p") {
   return `${even(resolution.base)}x${even(resolution.base * aspect.rh / aspect.rw)}`;
 }
 
+function normalizeVideoFrameCount(value, fallback = 121) {
+  const fallbackNumber = Number(fallback);
+  const safeFallback = Number.isFinite(fallbackNumber) && fallbackNumber > 0 ? fallbackNumber : 121;
+  const candidate = Number(value);
+  const raw = Number.isFinite(candidate) && candidate > 0 ? candidate : safeFallback;
+  return Math.max(1, Math.round((raw - 1) / 8) * 8 + 1);
+}
+
 function durationToFrames(duration, fps = 24) {
-  return Math.max(9, Math.round(Number(duration || 5) * Number(fps || 24)) + 1);
+  const durationNumber = Number(duration);
+  const fpsNumber = Number(fps);
+  const raw = Number.isFinite(durationNumber) && durationNumber > 0 && Number.isFinite(fpsNumber) && fpsNumber > 0
+    ? Math.round(durationNumber * fpsNumber) + 1
+    : 121;
+  return normalizeVideoFrameCount(raw);
 }
 
 function labelFor(options, id, fallbackId) {
@@ -2651,7 +2665,7 @@ function applySizePickerAction(card, action, value) {
   }
   if (action === "duration") {
     patch.duration = Number(value);
-    patch.num_frames = durationToFrames(Number(value), card.frame_rate || 24);
+    patch.num_frames = normalizeVideoFrameCount(durationToFrames(Number(value), card.frame_rate || 24));
   }
   if (action === "generate_audio") patch.generate_audio = value === "true";
   return patch;
@@ -2773,11 +2787,18 @@ function setupSizePicker() {
 
 function bindInputs() {
   setupSizePicker();
-  const mappings = [[els.cardTitle, "title"], [els.cardPrompt, "prompt"], [els.cardModel, "model"], [els.videoFrames, "num_frames", Number], [els.videoFps, "frame_rate", Number], [els.negativePrompt, "negative_prompt"]];
+  const mappings = [[els.cardTitle, "title"], [els.cardPrompt, "prompt"], [els.cardModel, "model"], [els.videoFrames, "num_frames", value => value === "" ? 0 : Number(value)], [els.videoFps, "frame_rate", Number], [els.negativePrompt, "negative_prompt"]];
   mappings.forEach(([el, key, normalize]) => {
     const readValue = () => ({ [key]: normalize ? normalize(el.value) : el.value });
     el.addEventListener("input", () => updateSelected(readValue(), { render: false, deferSave: true }));
-    el.addEventListener("change", () => updateSelected(readValue(), { render: false }));
+    el.addEventListener("change", () => {
+      const patch = readValue();
+      if (key === "num_frames") {
+        patch[key] = normalizeVideoFrameCount(patch[key]);
+        el.value = String(patch[key]);
+      }
+      updateSelected(patch, { render: false });
+    });
   });
   els.referenceList.addEventListener("change", event => {
     const card = selectedCard();
@@ -4479,7 +4500,9 @@ async function generateAgnesImage(card, apiKey, prompt, originCanvasId) {
 
 async function generateAgnesVideo(card, apiKey, prompt, originCanvasId) {
   const { width, height } = parseSize(card.size);
-  const created = await requestAgnesVideo({ apiKey, model: card.model || settings.videoModel, prompt, imageRefs: cardRefs(card), width, height, num_frames: card.num_frames || 121, frame_rate: card.frame_rate || 24, negative_prompt: card.negative_prompt, generate_audio: card.generate_audio }, {
+  const numFrames = normalizeVideoFrameCount(card.num_frames, durationToFrames(card.duration, card.frame_rate));
+  if (card.num_frames !== numFrames) updateCard(card.id, { num_frames: numFrames }, originCanvasId);
+  const created = await requestAgnesVideo({ apiKey, model: card.model || settings.videoModel, prompt, imageRefs: cardRefs(card), width, height, num_frames: normalizeVideoFrameCount(numFrames), frame_rate: card.frame_rate || 24, negative_prompt: card.negative_prompt, generate_audio: card.generate_audio }, {
     onQueueWait: ({ remainingSeconds, attempt, maxRetries }) => updateCard(card.id, {
       status: "running",
       progress: 8,

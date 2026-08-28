@@ -99,6 +99,25 @@ $setupPerformanceFixtureBlock = [regex]::Match($app, 'function setupPerformanceF
 $finishPerformanceFrameTelemetryBlock = [regex]::Match($app, 'function finishCanvasPerformanceFrameTelemetry\([^)]*\) \{[\s\S]*?\n\}').Value
 $performanceFrameTelemetryBlock = [regex]::Match($app, 'function startCanvasPerformanceFrameTelemetry\([^)]*\) \{[\s\S]*?\n\}').Value
 $bootBlock = [regex]::Match($app, 'function boot\(\) \{[\s\S]*?\n\}').Value
+$videoFrameNormalizationBlock = [regex]::Match($app, 'function normalizeVideoFrameCount\(value, fallback = 121\) \{[\s\S]*?\n\}').Value
+$durationToFramesBlock = [regex]::Match($app, 'function durationToFrames\(duration, fps = 24\) \{[\s\S]*?\n\}').Value
+$videoFrameNormalizationPass = $false
+if ($videoFrameNormalizationBlock -and $durationToFramesBlock) {
+  $videoFrameProbe = @"
+function assert(condition) { if (!condition) process.exit(1); }
+$videoFrameNormalizationBlock
+$durationToFramesBlock
+for (const [input, expected] of [[1, 1], [9, 9], [121, 121], [151, 153], [157, 161]]) {
+  assert(normalizeVideoFrameCount(input) === expected);
+}
+assert(durationToFrames(6.25, 24) === 153);
+assert(durationToFrames(5, 24) === 121);
+"@
+  $env:VIDEO_FRAME_PROBE = $videoFrameProbe
+  & node -e 'eval(process.env.VIDEO_FRAME_PROBE)'
+  $videoFrameNormalizationPass = $LASTEXITCODE -eq 0
+  Remove-Item Env:\VIDEO_FRAME_PROBE
+}
 $performanceFixturePass = $false
 if ($fixture) {
   $performanceFixtureProbe = @'
@@ -1105,7 +1124,7 @@ $checks = @(
   @{
     Name = 'canvas engine and app scripts are cache busted together'
     Pass = $html -match 'canvas-engine\.js\?v=canvas-interactions-5' -and
-      $html -match 'app\.js\?v=canvas-interactions-16'
+      $html -match 'app\.js\?v=canvas-interactions-17'
   },
   @{
     Name = 'wheel modifiers route to horizontal pan vertical pan and zoom'
@@ -2000,7 +2019,7 @@ $checks = @(
   },
   @{
     Name = 'video thumbnails suppress native media hover controls'
-    Pass = $html -match 'app\.js\?v=canvas-interactions-16' -and
+    Pass = $html -match 'app\.js\?v=canvas-interactions-17' -and
       $styles -match '\.commerce-asset-media\s*>\s*video\s*\{[\s\S]*?pointer-events:\s*none' -and
       $app -match 'disablepictureinpicture' -and
       $app -match 'disableremoteplayback'
@@ -2104,6 +2123,14 @@ $checks = @(
       $app -match '不要重复点击'
   },
   @{
+    Name = 'video frame counts satisfy Agnes 8n+1 validation'
+    Pass = $videoFrameNormalizationPass -and
+      $app -match 'num_frames: normalizeVideoFrameCount' -and
+      $app -match 'patch\.num_frames = normalizeVideoFrameCount' -and
+      $server -match 'function normalizeVideoFrameCount\(' -and
+      $server -match 'num_frames: normalizeVideoFrameCount\(payload\.num_frames'
+  },
+  @{
     Name = 'temporary workspace assets persist outside the canvas localStorage snapshot'
     Pass = $app -match 'ASSET_DB_NAME' -and
       $app -match 'indexedDB\.open' -and
@@ -2129,7 +2156,7 @@ $checks = @(
   },
   @{
     Name = 'prompt fixes are cache-busted in the served page'
-    Pass = $html -match 'app\.js\?v=canvas-interactions-16' -and $html -match 'styles\.css\?v=canvas-controls-15'
+    Pass = $html -match 'app\.js\?v=canvas-interactions-17' -and $html -match 'styles\.css\?v=canvas-controls-15'
   },
   @{
     Name = 'server exposes a deployment health endpoint'
