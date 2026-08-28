@@ -2134,6 +2134,7 @@ $checks = @(
     Name = 'API key starts empty and requires user input'
     Pass = $app -match 'function getApiKey\(\) \{\s*return sessionStorage\.getItem\(API_KEY_SESSION\) \|\| "";' -and
       $html -match '首次使用请填写自己的 API Key' -and
+      $html -match 'id="apiKey"[^>]*autocomplete="new-password"' -and
       $app -notmatch 'sk-[A-Za-z0-9]{20,}' -and
       $server -notmatch 'sk-[A-Za-z0-9]{20,}'
   },
