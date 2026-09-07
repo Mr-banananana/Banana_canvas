@@ -70,6 +70,8 @@ Windows 用户不需要安装 npm，不需要 `npm install`，也不需要命令
 3. 双击项目根目录的 `start.bat`。
 4. 脚本确认服务健康后，会自动打开 `http://localhost:5177/`，然后在右上角 `API 设置` 中填写自己的 Agnes API Key。
 
+启动脚本会使用一次性地址参数，并由本地服务禁止静态资源缓存，避免更新后继续加载旧版页面或脚本；不会清除画布、临时资产或用户填写的 API Key。
+
 - 启动入口：双击 `start.bat`
 - 退出入口：双击 `stop.bat`
 - 也可以在 `Banana Canvas Server` 窗口按 `Ctrl+C` 停止服务

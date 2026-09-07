@@ -11,6 +11,8 @@ if errorlevel 1 (
   exit /b 1
 )
 
+set "CACHE_BUSTER=%RANDOM%%RANDOM%"
+
 set "EXISTING_PID="
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":5177 .*LISTENING"') do if not defined EXISTING_PID set "EXISTING_PID=%%P"
 if defined EXISTING_PID (
@@ -18,7 +20,7 @@ if defined EXISTING_PID (
   if not errorlevel 1 (
     echo [OK] Banana Canvas is already running on http://localhost:5177/
     echo [INFO] Existing process ID: %EXISTING_PID%
-    start "" "http://localhost:5177/"
+    start "" "http://localhost:5177/?startup=%CACHE_BUSTER%"
     echo [INFO] To stop it, double-click stop.bat.
     pause
     exit /b 0
@@ -43,7 +45,7 @@ pause
 exit /b 1
 
 :ready
-start "" "http://localhost:5177/"
+start "" "http://localhost:5177/?startup=%CACHE_BUSTER%"
 echo [OK] Service is ready: http://localhost:5177/
 echo [INFO] Keep the Banana Canvas Server window open while using the app.
 echo [INFO] To exit, double-click stop.bat or press Ctrl+C in the server window.

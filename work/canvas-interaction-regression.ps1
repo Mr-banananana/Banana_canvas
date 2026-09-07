@@ -16,6 +16,7 @@ $stopBat = if (Test-Path (Join-Path $PSScriptRoot '..\stop.bat')) { Get-Content 
 $startPs1 = if (Test-Path (Join-Path $PSScriptRoot '..\start.ps1')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\start.ps1') } else { '' }
 $startCommand = if (Test-Path (Join-Path $PSScriptRoot '..\start.command')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\start.command') } else { '' }
 $startSh = if (Test-Path (Join-Path $PSScriptRoot '..\start.sh')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\start.sh') } else { '' }
+$serveStaticBlock = [regex]::Match($server, 'function serveStatic\(req, res\) \{[\s\S]*?\n\}').Value
 $assetGrid = [regex]::Match($styles, '\.commerce-asset-grid\s*\{[^}]*\}').Value
 $shortcutsBlock = [regex]::Match($html, '<div id="shortcutsModal"[\s\S]*?</div>\s*<script>').Value
 $pointerDownBlock = [regex]::Match($app, 'els\.viewport\.addEventListener\("pointerdown", event => \{[\s\S]*?if \(event\.button === 2\)').Value
@@ -2225,6 +2226,14 @@ $checks = @(
   @{
     Name = 'Windows starter reports readiness before opening the browser'
     Pass = $startBat -match '/healthz' -and $startBat -match 'Service is ready'
+  },
+  @{
+    Name = 'starters bust browser cache and static assets are not cached'
+    Pass = $startBat -match 'CACHE_BUSTER' -and $startBat -match '\?startup=%CACHE_BUSTER%' -and
+      $startPs1 -match 'cacheBuster' -and $startPs1 -match '\?startup=\$cacheBuster' -and
+      $startCommand -match 'CACHE_BUSTER' -and $startCommand -match '\?startup=\$CACHE_BUSTER' -and
+      $startSh -match 'CACHE_BUSTER' -and $startSh -match '\?startup=\$CACHE_BUSTER' -and
+      $serveStaticBlock -match 'cache-control.*no-store'
   },
   @{
     Name = 'Windows stop entry stops the server and reports the result'

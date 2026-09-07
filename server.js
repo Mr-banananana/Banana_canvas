@@ -569,7 +569,12 @@ function serveStatic(req, res) {
       return;
     }
     const ext = path.extname(target).toLowerCase();
-    send(res, 200, data, { "content-type": MIME_TYPES[ext] || "application/octet-stream" });
+    send(res, 200, data, {
+      "content-type": MIME_TYPES[ext] || "application/octet-stream",
+      "cache-control": "no-store, no-cache, must-revalidate",
+      "pragma": "no-cache",
+      "expires": "0"
+    });
   });
 }
 

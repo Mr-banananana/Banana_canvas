@@ -8,10 +8,11 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
+CACHE_BUSTER="$(date +%s)-$$"
 node server.js &
 SERVER_PID=$!
 trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT INT TERM
 sleep 2
-open "http://localhost:5177/"
+open "http://localhost:5177/?startup=$CACHE_BUSTER"
 echo "Banana Canvas is running at http://localhost:5177/"
 wait "$SERVER_PID"
