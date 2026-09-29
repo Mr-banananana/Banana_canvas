@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { URL } = require("url");
 
-const PORT = Number(process.env.PORT || 5177);
+const PORT = Number(process.env.PORT || 5337);
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const CANVAS_PERFORMANCE_FIXTURE_PATH = path.join(ROOT, "work", "canvas-performance-fixture.js");
@@ -586,7 +586,7 @@ async function route(req, res) {
       return;
     }
     if (req.method === "GET" && url.pathname === "/healthz") {
-      sendJson(res, 200, { status: "ok" });
+      sendJson(res, 200, { status: "ok", service: "banana-canvas" });
       return;
     }
     if (req.method === "POST" && url.pathname === "/api/agnes/image") {

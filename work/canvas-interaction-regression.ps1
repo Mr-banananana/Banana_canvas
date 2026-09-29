@@ -2,6 +2,9 @@ $app = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\public\app.js'
 $styles = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\public\styles.css')
 $html = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\public\index.html')
 $server = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\server.js')
+$launcher = if (Test-Path (Join-Path $PSScriptRoot '..\launcher.js')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\launcher.js') } else { '' }
+$nodeBootstrap = if (Test-Path (Join-Path $PSScriptRoot '..\bootstrap-node.sh')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\bootstrap-node.sh') } else { '' }
+$windowsStart = if (Test-Path (Join-Path $PSScriptRoot '..\start.ps1')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\start.ps1') } else { '' }
 $package = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\package.json')
 $readme = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\README.md')
 $alipayAsset = Join-Path $PSScriptRoot '..\public\assets\support-alipay.jpg'
@@ -13,6 +16,7 @@ $render = if (Test-Path (Join-Path $PSScriptRoot '..\render.yaml')) { Get-Conten
 $gitignore = if (Test-Path (Join-Path $PSScriptRoot '..\.gitignore')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\.gitignore') } else { '' }
 $startBat = if (Test-Path (Join-Path $PSScriptRoot '..\start.bat')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\start.bat') } else { '' }
 $stopBat = if (Test-Path (Join-Path $PSScriptRoot '..\stop.bat')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\stop.bat') } else { '' }
+$stopPs1 = if (Test-Path (Join-Path $PSScriptRoot '..\stop.ps1')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\stop.ps1') } else { '' }
 $startPs1 = if (Test-Path (Join-Path $PSScriptRoot '..\start.ps1')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\start.ps1') } else { '' }
 $startCommand = if (Test-Path (Join-Path $PSScriptRoot '..\start.command')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\start.command') } else { '' }
 $startSh = if (Test-Path (Join-Path $PSScriptRoot '..\start.sh')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\start.sh') } else { '' }
@@ -2177,7 +2181,7 @@ $checks = @(
   },
   @{
     Name = 'repository includes a production container entrypoint'
-    Pass = $dockerfile -match 'FROM node:18' -and $dockerfile -match 'CMD \["npm", "start"\]' -and $dockerfile -match 'EXPOSE 5177'
+    Pass = $dockerfile -match 'FROM node:18' -and $dockerfile -match 'COPY launcher\.js' -and $dockerfile -match 'CMD \["npm", "start"\]' -and $dockerfile -match 'EXPOSE 5337'
   },
   @{
     Name = 'repository includes Render deployment metadata'
@@ -2185,7 +2189,7 @@ $checks = @(
   },
   @{
     Name = 'repository ignores local secrets and runtime files'
-    Pass = $gitignore -match '\.env' -and $gitignore -match 'node_modules/' -and $gitignore -match 'outputs/'
+    Pass = $gitignore -match '\.env' -and $gitignore -match 'node_modules/' -and $gitignore -match 'outputs/' -and $gitignore -match '\.runtime/' -and $gitignore -match '\.banana-canvas\.runtime\.json'
   },
   @{
     Name = 'README documents public deployment and API key handling'
@@ -2217,31 +2221,35 @@ $checks = @(
   },
   @{
     Name = 'Windows starter launches the local server and browser'
-    Pass = $startBat -match 'node server\.js' -and $startBat -match 'localhost:5177' -and $startBat -match 'where node'
+    Pass = $startBat -match 'start\.ps1' -and $windowsStart -match 'launcher\.js' -and $windowsStart -match 'BANANA_OPEN_BROWSER'
   },
   @{
-    Name = 'Windows starter detects an existing server before launching'
-    Pass = $startBat -match 'netstat' -and $startBat -match 'LISTENING' -and $startBat -match 'already running'
+    Name = 'Shared launcher reuses a healthy existing instance'
+    Pass = $launcher -match 'findExistingInstance\(' -and $launcher -match '检测到已运行的实例'
   },
   @{
-    Name = 'Windows starter reports readiness before opening the browser'
-    Pass = $startBat -match '/healthz' -and $startBat -match 'Service is ready'
+    Name = 'Shared launcher verifies health before opening the browser'
+    Pass = $launcher -match 'STARTUP_TIMEOUT_MS' -and $launcher -match 'checkHealth\(port\)' -and $launcher -match '健康检查通过'
   },
   @{
     Name = 'starters bust browser cache and static assets are not cached'
-    Pass = $startBat -match 'CACHE_BUSTER' -and $startBat -match '\?startup=%CACHE_BUSTER%' -and
-      $startPs1 -match 'cacheBuster' -and $startPs1 -match '\?startup=\$cacheBuster' -and
-      $startCommand -match 'CACHE_BUSTER' -and $startCommand -match '\?startup=\$CACHE_BUSTER' -and
-      $startSh -match 'CACHE_BUSTER' -and $startSh -match '\?startup=\$CACHE_BUSTER' -and
+    Pass = $launcher -match '\?startup=\$\{Date\.now\(\)\}' -and
       $serveStaticBlock -match 'cache-control.*no-store'
   },
   @{
     Name = 'Windows stop entry stops the server and reports the result'
-    Pass = $stopBat -match 'netstat' -and $stopBat -match '5177' -and $stopBat -match 'taskkill' -and $stopBat -match 'stopped'
+    Pass = $stopBat -match 'stop\.ps1' -and $stopPs1 -match 'taskkill\.exe' -and $stopPs1 -match 'launcher\.js' -and $stopPs1 -match '不会结束其他程序'
   },
   @{
     Name = 'PowerShell starter works without npm installation'
-    Pass = $startPs1 -match '-FilePath "node"' -and $startPs1 -match '-ArgumentList "server\.js"' -and $startPs1 -match 'localhost:5177' -and $startPs1 -notmatch 'npm install'
+    Pass = $startPs1 -match 'launcher\.js' -and $startPs1 -match 'BANANA_OPEN_BROWSER' -and $startPs1 -notmatch 'npm install'
+  },
+  @{
+    Name = 'Windows starter finds or securely bootstraps Node.js without a global PATH change'
+    Pass = $windowsStart -match 'ProgramFiles' -and $windowsStart -match 'nodejs' -and
+      $windowsStart -match 'https://nodejs\.org/dist/index\.json' -and
+      $windowsStart -match 'SHASUMS256\.txt' -and $windowsStart -match 'Get-FileHash' -and
+      $windowsStart -match '\.runtime' -and $windowsStart -match '\$env:PATH'
   },
   @{
     Name = 'README has a download and double-click quick start'
@@ -2249,7 +2257,11 @@ $checks = @(
   },
   @{
     Name = 'macOS starter launches the local server and browser'
-    Pass = $startCommand -match '#!/bin/bash' -and $startCommand -match 'node server\.js' -and $startCommand -match 'open.*localhost:5177' -and $startSh -match 'node server\.js'
+    Pass = $startCommand -match '#!/bin/bash' -and $startCommand -match 'bootstrap-node\.sh' -and $startCommand -match 'launcher\.js' -and $startCommand -match 'BANANA_OPEN_BROWSER=1' -and $startSh -match 'bootstrap-node\.sh' -and $startSh -match 'launcher\.js'
+  },
+  @{
+    Name = 'macOS and Linux starter checks Node.js and validates downloaded runtimes'
+    Pass = $nodeBootstrap -match 'nodejs\.org/dist/index\.json' -and $nodeBootstrap -match 'SHASUMS256\.txt' -and $nodeBootstrap -match 'shasum -a 256' -and $nodeBootstrap -match '\.runtime'
   },
   @{
     Name = 'README documents macOS double-click startup'

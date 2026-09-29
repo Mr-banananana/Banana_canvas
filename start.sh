@@ -1,18 +1,12 @@
 #!/bin/bash
 set -e
 cd "$(dirname "$0")"
+export PORT="${PORT:-5337}"
+export BANANA_OPEN_BROWSER=1
 
-if ! command -v node >/dev/null 2>&1; then
-  echo "Node.js 18 or newer is required."
-  open "https://nodejs.org/en/download/"
+source "$(dirname "$0")/bootstrap-node.sh"
+if ! bootstrap_node "$(cd "$(dirname "$0")" && pwd)"; then
   exit 1
 fi
 
-CACHE_BUSTER="$(date +%s)-$$"
-node server.js &
-SERVER_PID=$!
-trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT INT TERM
-sleep 2
-open "http://localhost:5177/?startup=$CACHE_BUSTER"
-echo "Banana Canvas is running at http://localhost:5177/"
-wait "$SERVER_PID"
+"$NODE_BIN" "$(pwd)/launcher.js"

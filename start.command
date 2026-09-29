@@ -1,20 +1,21 @@
 #!/bin/bash
 set -e
 cd "$(dirname "$0")"
+export PORT="${PORT:-5337}"
+export BANANA_OPEN_BROWSER=1
 
-if ! command -v node >/dev/null 2>&1; then
-  echo "Node.js 18 or newer is required."
-  open "https://nodejs.org/en/download/"
-  read -r -p "Install Node.js, then press Return to exit."
+source "$(dirname "$0")/bootstrap-node.sh"
+if ! bootstrap_node "$(cd "$(dirname "$0")" && pwd)"; then
+  read -r -p "自动准备 Node.js 失败。处理上方问题后重试；按回车退出。"
   exit 1
 fi
 
-CACHE_BUSTER="$(date +%s)-$$"
-node server.js &
-SERVER_PID=$!
-trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT INT TERM
-sleep 2
-open "http://localhost:5177/?startup=$CACHE_BUSTER"
-echo "Banana Canvas is running at http://localhost:5177/"
-echo "Close this Terminal window to stop the local server."
-wait "$SERVER_PID"
+if "$NODE_BIN" "$(pwd)/launcher.js"; then
+  status=0
+else
+  status=$?
+fi
+if [ "$status" -ne 0 ]; then
+  read -r -p "启动失败。处理上方问题后重试；按回车退出。"
+fi
+exit "$status"

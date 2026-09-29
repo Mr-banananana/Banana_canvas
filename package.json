@@ -4,9 +4,9 @@
   "private": true,
   "description": "Free and open-source local AI infinite canvas for node-based image and video workflows.",
   "scripts": {
-    "start": "node server.js",
+    "start": "node launcher.js",
     "test": "node work/canvas-engine.test.js && powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\work\\canvas-interaction-regression.ps1",
-    "check": "node --check server.js"
+    "check": "node --check launcher.js && node --check server.js"
   },
   "engines": {
     "node": ">=18"

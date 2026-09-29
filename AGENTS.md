@@ -12,11 +12,13 @@ Banana Canvas 是一个免费开源、本地优先的 AI 无限画布。用户�
 npm start
 ```
 
-浏览器访问 `http://localhost:5177/`。项目要求 Node.js 18 或更高版本，没有第三方 npm 依赖。Windows 使用 `start.bat`，macOS 使用 `start.command`。
+浏览器访问 `http://localhost:5337/`。项目要求 Node.js 18 或更高版本，没有第三方 npm 依赖。Windows 使用 `start.bat`，macOS 使用 `start.command`。
 
 ## 关键文件
 
 - `server.js`: 本地静态服务和 API 代理。
+- `launcher.js`: 跨平台启动器，负责 Node 版本检查、端口探测、健康检查和运行状态记录。
+- `bootstrap-node.sh` / `start.ps1`: 查找系统 Node.js，缺失时在 `.runtime/` 准备校验过的便携 Node.js；不修改系统 PATH。
 - `public/index.html`: 页面结构。
 - `public/app.js`: 画布、节点和工作台交互。
 - `public/canvas-engine.js`: 画布状态和节点关系逻辑。
