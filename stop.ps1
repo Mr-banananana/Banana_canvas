@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 $runtimePath = Join-Path $PSScriptRoot ".banana-canvas.runtime.json"
 $launcherPath = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "launcher.js")).Path
 

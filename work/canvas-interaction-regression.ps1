@@ -1,4 +1,4 @@
-$app = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\public\app.js')
+﻿$app = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\public\app.js')
 $styles = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\public\styles.css')
 $html = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\public\index.html')
 $server = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\server.js')

@@ -1,5 +1,12 @@
 # 更新日志
 
+## 2026-10-11
+
+### 修复 Windows 启动脚本的编码兼容性
+
+- 为 Windows PowerShell 脚本添加 UTF-8 BOM，避免旧版 Windows PowerShell 按系统 ANSI 代码页读取脚本时，将中文文本误解析为语法错误。
+- 覆盖启动、停止入口和 PowerShell 回归脚本。
+
 ## 2026-09-29
 
 ### 一键启动与环境自检
