@@ -1,6 +1,5 @@
 ﻿$ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
-if (-not $env:PORT) { $env:PORT = "5337" }
 $env:BANANA_OPEN_BROWSER = "1"
 
 $runtimeRoot = Join-Path $PSScriptRoot ".runtime"

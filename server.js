@@ -5,6 +5,7 @@ const path = require("path");
 const { URL } = require("url");
 
 const PORT = Number(process.env.PORT || 5337);
+const HOST = process.env.HOST || "127.0.0.1";
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const CANVAS_PERFORMANCE_FIXTURE_PATH = path.join(ROOT, "work", "canvas-performance-fixture.js");
@@ -53,6 +54,26 @@ function isLoopbackRequest(req) {
   const remoteAddress = String(req.socket.remoteAddress || "").toLowerCase();
   const loopbackPeer = remoteAddress === "::1" || remoteAddress.startsWith("127.") || remoteAddress.startsWith("::ffff:127.");
   return LOOPBACK_HOSTS.has(hostname) && loopbackPeer;
+}
+
+function isTrustedApiOrigin(req) {
+  const requestHost = String(req.headers.host || "").toLowerCase();
+  if (!requestHost) return false;
+  let hostname = "";
+  try {
+    hostname = new URL(`http://${requestHost}`).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+
+  if (LOOPBACK_HOSTS.has(HOST.toLowerCase()) && !LOOPBACK_HOSTS.has(hostname)) return false;
+  if (!req.headers.origin) return true;
+  try {
+    const origin = new URL(req.headers.origin);
+    return ["http:", "https:"].includes(origin.protocol) && origin.host.toLowerCase() === requestHost;
+  } catch {
+    return false;
+  }
 }
 
 function serveCanvasPerformanceFixture(req, res) {
@@ -556,10 +577,17 @@ async function handleCustom(req, res) {
 
 function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  let pathname = decodeURIComponent(url.pathname);
+  let pathname;
+  try {
+    pathname = decodeURIComponent(url.pathname);
+  } catch {
+    send(res, 400, "Bad request", { "content-type": "text/plain; charset=utf-8" });
+    return;
+  }
   if (pathname === "/") pathname = "/index.html";
-  const target = path.normalize(path.join(PUBLIC_DIR, pathname));
-  if (!target.startsWith(PUBLIC_DIR)) {
+  const target = path.resolve(PUBLIC_DIR, `.${pathname}`);
+  const relativeTarget = path.relative(PUBLIC_DIR, target);
+  if (relativeTarget === ".." || relativeTarget.startsWith(`..${path.sep}`) || path.isAbsolute(relativeTarget)) {
     send(res, 403, "Forbidden", { "content-type": "text/plain; charset=utf-8" });
     return;
   }
@@ -581,6 +609,10 @@ function serveStatic(req, res) {
 async function route(req, res) {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    if (url.pathname.startsWith("/api/") && !isTrustedApiOrigin(req)) {
+      sendJson(res, 403, { error: "Cross-origin API requests are not allowed." });
+      return;
+    }
     if (req.method === "GET" && url.pathname === "/_dev/canvas-performance-fixture.js") {
       serveCanvasPerformanceFixture(req, res);
       return;
@@ -640,6 +672,6 @@ server.on("error", error => {
   process.exitCode = 1;
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   console.log(`Local AI Canvas running at http://localhost:${PORT}`);
 });

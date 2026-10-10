@@ -7,7 +7,16 @@ const { spawn } = require("child_process");
 const ROOT = __dirname;
 const SERVER_PATH = path.join(ROOT, "server.js");
 const RUNTIME_PATH = path.join(ROOT, ".banana-canvas.runtime.json");
-const DEFAULT_PORT = Number(process.env.PORT || 5337);
+const PORT_PREFERENCE_PATH = path.join(ROOT, ".banana-canvas.port");
+function readPortPreference() {
+  try {
+    const port = Number(fs.readFileSync(PORT_PREFERENCE_PATH, "utf8").trim());
+    return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 5337;
+  } catch {
+    return 5337;
+  }
+}
+const DEFAULT_PORT = Number(process.env.PORT || readPortPreference());
 const MAX_PORT_ATTEMPTS = 40;
 const STARTUP_TIMEOUT_MS = 15000;
 
@@ -181,6 +190,9 @@ async function main() {
 
   const existingPort = await findExistingInstance();
   if (existingPort) {
+    try {
+      fs.writeFileSync(PORT_PREFERENCE_PATH, `${existingPort}\n`, "utf8");
+    } catch {}
     const url = `http://localhost:${existingPort}/?startup=${Date.now()}`;
     log(`检测到已运行的实例，复用端口 ${existingPort}。`);
     if (process.env.BANANA_OPEN_BROWSER === "1") openBrowser(url);
@@ -204,6 +216,11 @@ async function main() {
         writeRuntimeFile(port);
       } catch (error) {
         log(`无法写入启动状态文件（${error.message}）；服务可用，但请用启动窗口的 Ctrl+C 退出。`);
+      }
+      try {
+        fs.writeFileSync(PORT_PREFERENCE_PATH, `${port}\n`, "utf8");
+      } catch (error) {
+        log(`无法记住当前端口（${error.message}）；下次启动可能会选择其他端口。`);
       }
       const url = `http://localhost:${port}/?startup=${Date.now()}`;
       log(`健康检查通过，服务已就绪：http://localhost:${port}/`);

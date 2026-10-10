@@ -188,6 +188,8 @@ let canvasLibrary = {
   canvases: []
 };
 let assetDatabasePromise = null;
+const persistedWorkspaceAssetKeys = new Set();
+const workspaceAssetWritePromises = new Map();
 
 const settings = {
   provider: "agnes",
@@ -287,18 +289,27 @@ function assetRecordKey(canvasId, kind, resultId) {
 }
 
 function persistWorkspaceAsset(canvasId, kind, result) {
-  if (!assetDatabaseAvailable() || !canvasId || !result?.id || !result?.url) return;
-  openAssetDatabase().then(db => new Promise((resolve, reject) => {
+  if (!assetDatabaseAvailable() || !canvasId || !result?.id || !result?.url || !result.url.startsWith("data:") || result.url.length <= INLINE_ASSET_STORAGE_LIMIT) return;
+  const key = assetRecordKey(canvasId, kind, result.id);
+  if (persistedWorkspaceAssetKeys.has(key)) return;
+  if (workspaceAssetWritePromises.has(key)) return;
+  const write = openAssetDatabase().then(db => new Promise((resolve, reject) => {
     const transaction = db.transaction(ASSET_STORE_NAME, "readwrite");
     transaction.objectStore(ASSET_STORE_NAME).put({
-      key: assetRecordKey(canvasId, kind, result.id),
+      key,
       canvasId,
       kind,
       result: cloneData(result)
     });
     transaction.oncomplete = resolve;
     transaction.onerror = () => reject(transaction.error || new Error("IndexedDB write failed"));
-  })).catch(() => {});
+  })).then(() => {
+    persistedWorkspaceAssetKeys.add(key);
+    scheduleLocalSave(canvasId);
+  }).catch(error => {
+    console.warn("Large workspace asset remains inline because IndexedDB storage failed.", error);
+  }).finally(() => workspaceAssetWritePromises.delete(key));
+  workspaceAssetWritePromises.set(key, write);
 }
 
 function persistWorkspaceAssetsForCanvas(canvasId, commerceWorkspace, productVideoWorkspace) {
@@ -306,13 +317,14 @@ function persistWorkspaceAssetsForCanvas(canvasId, commerceWorkspace, productVid
   (productVideoWorkspace?.results || []).forEach(result => persistWorkspaceAsset(canvasId, "product-video", result));
 }
 
-function workspaceStorageSnapshot(workspace = {}) {
+function workspaceStorageSnapshot(workspace = {}, canvasId, kind) {
   return {
     ...workspace,
     results: Array.isArray(workspace.results) ? workspace.results.map(result => {
       const id = String(result?.id || uid("workspace-result"));
       const url = String(result?.url || "");
-      return url.startsWith("data:") && url.length > INLINE_ASSET_STORAGE_LIMIT
+      const key = assetRecordKey(canvasId, kind, id);
+      return url.startsWith("data:") && url.length > INLINE_ASSET_STORAGE_LIMIT && persistedWorkspaceAssetKeys.has(key)
         ? { ...result, id, url: `${ASSET_REF_PREFIX}${id}` }
         : { ...result, id };
     }) : []
@@ -330,6 +342,7 @@ async function hydratePersistedWorkspaceAssets() {
       request.onerror = () => reject(request.error || new Error("IndexedDB read failed"));
     });
     records.forEach(record => {
+      persistedWorkspaceAssetKeys.add(record.key);
       const target = canvasStateFor(record.canvasId);
       const workspace = record.kind === "product-video" ? target?.productVideoWorkspace : target?.commerceWorkspace;
       const result = record.result;
@@ -356,20 +369,45 @@ function snapshotKey(snapshot) {
   return JSON.stringify(snapshot || {});
 }
 
+function normalizeViewport(viewport = {}) {
+  if (!viewport || typeof viewport !== "object" || Array.isArray(viewport)) viewport = {};
+  const finite = (value, fallback) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.min(10_000_000, Math.max(-10_000_000, number)) : fallback;
+  };
+  const scale = Number(viewport.scale);
+  return {
+    x: finite(viewport.x ?? 300, 300),
+    y: finite(viewport.y ?? 160, 160),
+    scale: Number.isFinite(scale) ? Math.min(2.5, Math.max(0.25, scale)) : 1
+  };
+}
+
+function safeResultLink(value) {
+  if (typeof value !== "string" || !value.trim()) return "";
+  try {
+    const url = new URL(value, window.location.href);
+    return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
 function normalizeCanvasGroup(group = {}) {
   const memberIds = Array.isArray(group.memberIds) ? group.memberIds.map(String).filter(id => state.cards.some(card => card.id === id)) : [];
+  const color = typeof group.color === "string" && /^#[0-9a-f]{6}$/i.test(group.color) ? group.color : "#e7ff25";
   return {
     id: String(group.id || uid("group")),
     name: String(group.name || "未命名分组").trim().slice(0, 32) || "未命名分组",
     memberIds: [...new Set(memberIds)],
-    color: String(group.color || "#e7ff25"),
+    color,
     createdAt: Number(group.createdAt || Date.now())
   };
 }
 
 function normalizeCanvasSnapshots(snapshots) {
   if (!Array.isArray(snapshots)) return [];
-  return snapshots.slice(0, 12).map(snapshot => ({
+  return snapshots.filter(snapshot => snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)).slice(0, 12).map(snapshot => ({
     id: String(snapshot.id || uid("snapshot")),
     name: String(snapshot.name || "历史快照").slice(0, 32),
     createdAt: Number(snapshot.createdAt || Date.now()),
@@ -377,11 +415,7 @@ function normalizeCanvasSnapshots(snapshots) {
       cards: Array.isArray(snapshot.state?.cards) ? snapshot.state.cards : [],
       edges: Array.isArray(snapshot.state?.edges) ? snapshot.state.edges : [],
       groups: Array.isArray(snapshot.state?.groups) ? snapshot.state.groups : [],
-      viewport: snapshot.state?.viewport ? {
-        x: Number(snapshot.state.viewport.x ?? 300),
-        y: Number(snapshot.state.viewport.y ?? 160),
-        scale: Math.min(2.5, Math.max(0.25, Number(snapshot.state.viewport.scale || 1)))
-      } : undefined
+      viewport: snapshot.state?.viewport ? normalizeViewport(snapshot.state.viewport) : undefined
     }
   }));
 }
@@ -427,11 +461,7 @@ function createCanvasRecord(name = "未命名画布", source = {}) {
     edges: normalizeCanvasEdges(Array.isArray(source.edges) ? cloneData(source.edges) : []),
     groups: Array.isArray(source.groups) ? cloneData(source.groups) : [],
     canvasSnapshots: normalizeCanvasSnapshots(source.canvasSnapshots),
-    viewport: {
-      x: Number(source.viewport?.x ?? 300),
-      y: Number(source.viewport?.y ?? 160),
-      scale: Math.min(2.5, Math.max(0.25, Number(source.viewport?.scale || 1)))
-    },
+    viewport: normalizeViewport(source.viewport),
     workspaceMode: ["commerce", "product-video"].includes(source.workspaceMode) ? source.workspaceMode : "canvas",
     commerceWorkspace: normalizeCommerceWorkspace(source.commerceWorkspace || {}),
     productVideoWorkspace: normalizeProductVideoWorkspace(source.productVideoWorkspace || {})
@@ -451,8 +481,8 @@ function captureCurrentCanvas() {
     canvasSnapshots: state.canvasSnapshots,
     viewport: state.viewport,
     workspaceMode: state.workspaceMode,
-    commerceWorkspace: workspaceStorageSnapshot(state.commerceWorkspace),
-    productVideoWorkspace: workspaceStorageSnapshot(state.productVideoWorkspace)
+    commerceWorkspace: workspaceStorageSnapshot(state.commerceWorkspace, canvasLibrary.activeCanvasId, "commerce"),
+    productVideoWorkspace: workspaceStorageSnapshot(state.productVideoWorkspace, canvasLibrary.activeCanvasId, "product-video")
   });
 }
 
@@ -744,15 +774,23 @@ function load() {
 }
 
 function normalizeCard(card) {
-  const def = NODE_DEFS[card.type] || NODE_DEFS.text;
+  card.type = typeof card.type === "string" && Object.prototype.hasOwnProperty.call(NODE_DEFS, card.type) ? card.type : "text";
+  const def = NODE_DEFS[card.type];
+  card.id = String(card.id || uid(card.type));
+  const x = Number(card.x);
+  const y = Number(card.y);
+  const width = Number(card.w);
+  const height = Number(card.h);
+  card.x = Number.isFinite(x) ? x : 0;
+  card.y = Number.isFinite(y) ? y : 0;
+  card.w = Number.isFinite(width) && width > 0 ? width : def.w;
+  card.h = Number.isFinite(height) && height > 0 ? height : def.h;
   const migrateCommerceDefaults = card.type === "commerce" && Number(card.commerceQualityVersion || 0) < 1;
   if (migrateCommerceDefaults) {
     if (!card.imageResolution || card.imageResolution === "1k") card.imageResolution = "2k";
     if (!card.aspect || card.aspect === "auto") card.aspect = "3:4";
     card.commerceQualityVersion = 1;
   }
-  card.w = Number(card.w || def.w);
-  card.h = Number(card.h || def.h);
   card.refs = Array.isArray(card.refs) ? card.refs : [];
   card.status = card.status || "idle";
   card.progress = Number(card.progress || 0);
@@ -896,10 +934,12 @@ function persistSettings() {
 }
 
 function normalizeCanvasState() {
+  state.cards = Array.isArray(state.cards) ? state.cards.filter(card => card && typeof card === "object" && !Array.isArray(card)) : [];
   state.cards.forEach(card => normalizeCard(card));
-  state.edges = state.edges.filter(edge => findCard(edge.from) && findCard(edge.to) && edge.from !== edge.to);
+  state.edges = (Array.isArray(state.edges) ? state.edges : []).filter(edge => edge && typeof edge === "object" && findCard(edge.from) && findCard(edge.to) && edge.from !== edge.to);
   state.edges = normalizeCanvasEdges(state.edges);
-  state.groups = state.groups.map(normalizeCanvasGroup).filter(group => group.memberIds.length);
+  state.groups = (Array.isArray(state.groups) ? state.groups : []).filter(group => group && typeof group === "object" && !Array.isArray(group)).map(normalizeCanvasGroup).filter(group => group.memberIds.length);
+  state.viewport = normalizeViewport(state.viewport);
 }
 
 function restoreCanvasState(snapshot) {
@@ -2144,7 +2184,9 @@ async function downloadProductVideoResult(id) {
     link.click();
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   } catch {
-    link.href = result.url;
+    const fallbackUrl = safeResultLink(result.url);
+    if (!fallbackUrl) return;
+    link.href = fallbackUrl;
     link.download = filename;
     link.rel = "noreferrer";
     link.click();
@@ -2494,12 +2536,12 @@ function render() {
   const cardsHtml = state.cards.map(card => {
     const connected = connectedIds(card).size > 0;
     return `
-      <article class="card ${isCardSelected(card.id) ? "selected" : ""} ${connected ? "connected" : ""}" data-id="${card.id}" style="transform:translate3d(${card.x}px, ${card.y}px, 0);width:${card.w}px;min-height:${card.h}px">
-        <button class="port input" data-port="input" data-id="${card.id}" title="输入"></button>
-        <button class="port output" data-port="output" data-id="${card.id}" title="输出"></button>
+      <article class="card ${isCardSelected(card.id) ? "selected" : ""} ${connected ? "connected" : ""}" data-id="${escapeAttr(card.id)}" style="transform:translate3d(${card.x}px, ${card.y}px, 0);width:${card.w}px;min-height:${card.h}px">
+        <button class="port input" data-port="input" data-id="${escapeAttr(card.id)}" title="输入"></button>
+        <button class="port output" data-port="output" data-id="${escapeAttr(card.id)}" title="输出"></button>
         <div class="card-head">
           <div class="card-title">${escapeHtml(card.title)}</div>
-          <span class="badge ${statusClass(card)}">${statusLabel(card)}</span>
+          <span class="badge ${statusClass(card)}">${escapeHtml(statusLabel(card))}</span>
         </div>
         <div class="card-body">
           <div class="asset-preview">${cardPreview(card)}</div>
@@ -2708,11 +2750,11 @@ function renderInspector() {
         const checked = card.refs.includes(item.id) || upstreamIds.has(item.id);
         const locked = upstreamIds.has(item.id);
         return `<label class="ref-thumb ${checked ? "selected" : ""} ${locked ? "locked" : ""}" title="${escapeAttr(item.title)}">
-          <input type="checkbox" data-ref="${item.id}" ${checked ? "checked" : ""} ${locked ? "disabled" : ""}>
+          <input type="checkbox" data-ref="${escapeAttr(item.id)}" ${checked ? "checked" : ""} ${locked ? "disabled" : ""}>
           <img src="${escapeAttr(item.resultUrl)}" alt="${escapeAttr(item.title)}" draggable="false">
           <span>${escapeHtml(item.title || "图片")}</span>
           <b>${locked ? "已连接" : "参考"}</b>
-          <i><img src="${escapeAttr(item.resultUrl)}" alt="${escapeAttr(item.title)}" draggable="false"><a class="ref-open" href="${escapeAttr(item.resultUrl)}" target="_blank" rel="noreferrer">查看原图</a></i>
+          <i><img src="${escapeAttr(item.resultUrl)}" alt="${escapeAttr(item.title)}" draggable="false">${safeResultLink(item.resultUrl) ? `<a class="ref-open" href="${escapeAttr(safeResultLink(item.resultUrl))}" target="_blank" rel="noreferrer">查看原图</a>` : ""}</i>
         </label>`;
       }).join("")}</div>`
     : `<div class="status-box">暂无参考图。请把图片或上传资产节点连到此节点作为参考。</div>`;
@@ -2721,7 +2763,8 @@ function renderInspector() {
   const statusText = card.error || taskText(card);
   els.statusBox.textContent = statusText;
   els.statusBox.classList.toggle("error", card.status === "error");
-  els.resultBox.innerHTML = card.resultUrl ? `<a href="${escapeAttr(card.resultUrl)}" target="_blank" rel="noreferrer">打开生成结果</a>` : "";
+  const resultLink = safeResultLink(card.resultUrl);
+  els.resultBox.innerHTML = resultLink ? `<a href="${escapeAttr(resultLink)}" target="_blank" rel="noreferrer">打开生成结果</a>` : card.resultUrl ? "结果已生成，无法作为网页链接直接打开。" : "";
   requestAnimationFrame(() => {
     if (state.selectedId === card.id) {
       positionNodeDock(card);
@@ -3664,7 +3707,7 @@ function importJson(event) {
         if (Array.isArray(data.edges)) state.edges = data.edges;
         if (Array.isArray(data.groups)) state.groups = data.groups;
         if (Array.isArray(data.canvasSnapshots)) state.canvasSnapshots = normalizeCanvasSnapshots(data.canvasSnapshots);
-        if (data.viewport) state.viewport = data.viewport;
+        if (data.viewport) state.viewport = normalizeViewport(data.viewport);
       }
       if (data.settings) Object.assign(settings, data.settings);
       if (!Array.isArray(data.canvases)) {
@@ -3953,7 +3996,9 @@ async function downloadCommerceWorkspaceResult(id) {
     link.click();
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   } catch {
-    link.href = result.url;
+    const fallbackUrl = safeResultLink(result.url);
+    if (!fallbackUrl) return;
+    link.href = fallbackUrl;
     link.download = filename;
     link.rel = "noreferrer";
     link.click();

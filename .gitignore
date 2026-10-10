@@ -10,5 +10,6 @@ docs/superpowers/
 .worktrees/
 *.log
 .banana-canvas.runtime.json
+.banana-canvas.port
 .DS_Store
 Thumbs.db
