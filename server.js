@@ -10,8 +10,10 @@ const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const CANVAS_PERFORMANCE_FIXTURE_PATH = path.join(ROOT, "work", "canvas-performance-fixture.js");
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
-const AGNES_BASE = "https://apihub.agnes-ai.com";
-const AGNES_V1 = `${AGNES_BASE}/v1`;
+const AGNES_BASES = Object.freeze({
+  global: "https://apihub.agnes-ai.com",
+  china: "https://api.agnes-ai.cn"
+});
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
 
@@ -348,6 +350,10 @@ function agnesHeaders(apiKey) {
   };
 }
 
+function agnesBaseFor(payload) {
+  return payload.agnesRegion === "china" ? AGNES_BASES.china : AGNES_BASES.global;
+}
+
 function commerceRoleLabel(role) {
   return ({ product: "商品图", model: "模特图", scene: "场景图" }[role] || "参考图");
 }
@@ -402,7 +408,7 @@ async function handleAgnesImage(req, res) {
     }
   });
 
-  const data = await fetchJson(`${AGNES_V1}/images/generations`, {
+  const data = await fetchJson(`${agnesBaseFor(payload)}/v1/images/generations`, {
     method: "POST",
     headers: agnesHeaders(apiKey),
     body: JSON.stringify(body)
@@ -463,7 +469,7 @@ async function handleAgnesPrompt(req, res) {
     temperature: 0.78,
     max_tokens: 900
   };
-  const data = await fetchJson(`${AGNES_V1}/chat/completions`, {
+  const data = await fetchJson(`${agnesBaseFor(payload)}/v1/chat/completions`, {
     method: "POST",
     headers: agnesHeaders(apiKey),
     body: JSON.stringify(body)
@@ -494,7 +500,7 @@ async function handleAgnesVideo(req, res) {
     extra_body: imageRefs.length > 1 ? { image: imageRefs, mode: "keyframes" } : undefined
   });
 
-  const data = await fetchJson(`${AGNES_V1}/videos`, {
+  const data = await fetchJson(`${agnesBaseFor(payload)}/v1/videos`, {
     method: "POST",
     headers: agnesHeaders(apiKey),
     body: JSON.stringify(body)
@@ -513,8 +519,8 @@ async function handleAgnesVideoResult(req, res) {
   }
 
   const url = videoId
-    ? `${AGNES_BASE}/agnesapi?video_id=${encodeURIComponent(videoId)}&model_name=${encodeURIComponent(payload.model || "agnes-video-v2.0")}`
-    : `${AGNES_V1}/videos/${encodeURIComponent(taskId)}`;
+    ? `${agnesBaseFor(payload)}/agnesapi?video_id=${encodeURIComponent(videoId)}&model_name=${encodeURIComponent(payload.model || "agnes-video-v2.0")}`
+    : `${agnesBaseFor(payload)}/v1/videos/${encodeURIComponent(taskId)}`;
   const data = await fetchJson(url, {
     method: "GET",
     headers: { "Authorization": `Bearer ${apiKey}` }

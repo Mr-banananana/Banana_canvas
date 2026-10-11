@@ -126,6 +126,7 @@ Windows 用户不需要安装 npm，不需要 `npm install`，也不需要命令
 
 - Agnes AI 官网：[https://www.agnes-ai.com/](https://www.agnes-ai.com/)
 - Base URL：`https://apihub.agnes-ai.com/v1`
+- 中国站 Base URL：`https://api.agnes-ai.cn/v1`；请在应用 API 设置里选择与 API Key 所属站点相符的线路。
 - 图片生成：`POST /v1/images/generations`
 - 默认图片模型：`agnes-image-2.1-flash`
 - 自动提示词模型：`agnes-2.0-flash`，请求 `POST /v1/chat/completions`
@@ -140,6 +141,7 @@ Windows 用户不需要安装 npm，不需要 `npm install`，也不需要命令
 - 图片文生图、图生图、多参考图生成。
 - 视频文生视频、图生视频和多关键帧视频生成。
 - Agnes 视频异步任务轮询和错误退避。
+- Agnes 国际站/中国站线路选择；认证失败时显示站点与密钥检查提示。
 - 画布 JSON 导入/导出、历史记录、撤销/重做和本地快照。
 - 节点搜索、分组管理、依赖关系感知自动布局。
 - 自定义 API 高级配置。

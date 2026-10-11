@@ -303,6 +303,14 @@
             <input id="apiKey" type="password" autocomplete="new-password" placeholder="Bearer token">
           </label>
           <label>
+            Agnes 服务站点（密钥所属站点）
+            <select id="agnesRegion">
+              <option value="global">国际站 — apihub.agnes-ai.com</option>
+              <option value="china">中国站 — api.agnes-ai.cn</option>
+            </select>
+            <span class="field-hint">API Key 必须与所选站点一致。401 时请检查站点和密钥状态。</span>
+          </label>
+          <label>
             图片模型
             <select id="imageModel">
               <option value="agnes-image-2.1-flash">agnes-image-2.1-flash</option>

@@ -87,6 +87,7 @@ const els = {
   supportQrPreviewImage: document.getElementById("supportQrPreviewImage"),
   provider: document.getElementById("provider"),
   apiKey: document.getElementById("apiKey"),
+  agnesRegion: document.getElementById("agnesRegion"),
   imageModel: document.getElementById("imageModel"),
   promptModel: document.getElementById("promptModel"),
   videoModel: document.getElementById("videoModel"),
@@ -193,6 +194,7 @@ const workspaceAssetWritePromises = new Map();
 
 const settings = {
   provider: "agnes",
+  agnesRegion: "global",
   imageModel: "agnes-image-2.1-flash",
   promptModel: "agnes-2.0-flash",
   videoModel: "agnes-video-v2.0",
@@ -1107,6 +1109,8 @@ function migrateLegacyCommerceNodes() {
 
 function syncSettingsForm() {
   els.provider.value = settings.provider;
+  settings.agnesRegion = settings.agnesRegion === "china" ? "china" : "global";
+  els.agnesRegion.value = settings.agnesRegion;
   els.imageModel.value = settings.imageModel;
   els.promptModel.value = settings.promptModel || "agnes-2.0-flash";
   els.videoModel.value = settings.videoModel;
@@ -1121,6 +1125,7 @@ function syncSettingsForm() {
 
 function collectSettings() {
   settings.provider = els.provider.value;
+  settings.agnesRegion = els.agnesRegion.value === "china" ? "china" : "global";
   settings.imageModel = els.imageModel.value;
   settings.promptModel = els.promptModel.value.trim() || "agnes-2.0-flash";
   settings.videoModel = els.videoModel.value.trim() || "agnes-video-v2.0";
@@ -3780,7 +3785,10 @@ async function postJson(url, body, { flushLocalState = true } = {}) {
   if (flushLocalState) flushLocalSave();
   let response;
   try {
-    response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const requestBody = url.startsWith("/api/agnes/")
+      ? { ...body, agnesRegion: settings.agnesRegion === "china" ? "china" : "global" }
+      : body;
+    response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requestBody) });
   } catch (cause) {
     const error = new Error("本地服务连接中断，请确认 Banana Canvas 服务仍在运行后重试。");
     error.networkCode = cause?.cause?.code || cause?.code || "LOCAL_SERVICE_UNAVAILABLE";
@@ -3790,7 +3798,8 @@ async function postJson(url, body, { flushLocalState = true } = {}) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.error) {
     const message = data.error || `HTTP ${response.status}`;
-    const details = data.details ? `\n${JSON.stringify(data.details, null, 2)}` : "";
+    const upstreamUnauthorized = Number(data.details?.status) === 401;
+    const details = data.details && !upstreamUnauthorized ? `\n${JSON.stringify(data.details, null, 2)}` : "";
     const error = new Error(message + details);
     error.status = response.status;
     error.data = data;
@@ -3802,6 +3811,9 @@ async function postJson(url, body, { flushLocalState = true } = {}) {
     error.networkCode = data.code || "";
     error.retryable = Boolean(data.retryable);
     error.retryAfterSeconds = Number(data.retryAfterSeconds || data.details?.retryAfterSeconds || 0) || 0;
+    if (upstreamUnauthorized) {
+      error.message = "Agnes API Key 验证失败（401）。请确认“Agnes 服务站点”与密钥所属站点一致，并检查密钥是否有效；可在对应 Agnes 控制台重新创建密钥后再试。不要把 API Key 发给他人。";
+    }
     if (isUpstreamTimeout(error)) error.message = "Agnes 上游响应超时，请稍后重试。";
     if (isUpstreamNetworkError(error)) error.message = upstreamNetworkMessage(error);
     throw error;
