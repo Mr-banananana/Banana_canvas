@@ -198,7 +198,7 @@ const settings = {
   agnesRegion: "global",
   imageModel: "agnes-image-2.1-flash",
   promptModel: "agnes-2.0-flash",
-  videoModel: "agnes-video-v2.0",
+  videoModel: "agnes-video-2.5-flash",
   imageResponseFormat: "url",
   pollInterval: 12000,
   customEndpoint: "",
@@ -213,6 +213,11 @@ const MAX_VIDEO_POLL_INTERVAL = 60000;
 function normalizePollInterval(value) {
   const interval = Number(value);
   return Number.isFinite(interval) ? Math.min(MAX_VIDEO_POLL_INTERVAL, Math.max(MIN_VIDEO_POLL_INTERVAL, interval)) : MIN_VIDEO_POLL_INTERVAL;
+}
+
+function resolveVideoModel(model) {
+  const value = String(model || "").trim();
+  return settings.provider !== "custom" && (!value || value === "agnes-video-v2.0") ? "agnes-video-2.5-flash" : value || "agnes-video-2.5-flash";
 }
 const NODE_DEFS = {
   text: { title: "文本", label: "TEXT", w: 280, h: 240, prompt: "写一段用于生成视觉资产的提示词。" },
@@ -821,13 +826,19 @@ function normalizeCard(card) {
       agnesRegion: card.task.agnesRegion === "china" ? "china" : card.task.agnesRegion === "global" ? "global" : settings.agnesRegion === "china" ? "china" : "global",
       model: String(card.task.model || card.model) };
   } else card.task = null;
+  if (card.type === "video" && !card.task) card.model = resolveVideoModel(card.model);
   card.aspect = card.aspect || aspectFromSize(card.size || (card.type === "video" ? "1280x720" : "1024x768"));
   card.imageQuality = card.imageQuality || "medium";
   card.imageResolution = card.imageResolution || (card.type === "commerce" ? "2k" : "1k");
   card.videoResolution = card.videoResolution || "720p";
+  if (!card.task && settings.provider !== "custom" && /^agnes-video-2\.5(?:-flash)?$/.test(card.model)) {
+    const resolutions = card.model.endsWith("-flash") ? ["720p"] : ["720p", "1080p", "2k"];
+    if (!resolutions.includes(card.videoResolution)) card.videoResolution = "720p";
+  }
   card.frame_rate = Number(card.frame_rate || 24);
   if (!Number.isFinite(card.frame_rate) || card.frame_rate <= 0) card.frame_rate = 24;
   card.duration = Number(card.duration || Math.max(4, Math.round((Number(card.num_frames || 121) - 1) / Number(card.frame_rate || 24))) || 5);
+  if (!card.task && settings.provider !== "custom" && /^agnes-video-2\.5(?:-flash)?$/.test(card.model)) card.duration = Math.min(12, Math.max(4, Math.round(card.duration)));
   card.generate_audio = typeof card.generate_audio === "boolean" ? card.generate_audio : true;
   card.size = card.size || (card.type === "video" ? sizeForVideo(card.aspect, card.videoResolution) : sizeForImage(card.aspect, card.imageResolution));
   card.num_frames = normalizeVideoFrameCount(card.num_frames || durationToFrames(card.duration, card.frame_rate), durationToFrames(card.duration, card.frame_rate));
@@ -1131,6 +1142,7 @@ function migrateLegacyCommerceNodes() {
 
 
 function syncSettingsForm() {
+  settings.videoModel = resolveVideoModel(settings.videoModel);
   els.provider.value = settings.provider;
   settings.agnesRegion = settings.agnesRegion === "china" ? "china" : "global";
   els.agnesRegion.value = settings.agnesRegion;
@@ -1151,7 +1163,7 @@ function collectSettings() {
   settings.agnesRegion = els.agnesRegion.value === "china" ? "china" : "global";
   settings.imageModel = els.imageModel.value;
   settings.promptModel = els.promptModel.value.trim() || "agnes-2.0-flash";
-  settings.videoModel = els.videoModel.value.trim() || "agnes-video-v2.0";
+  settings.videoModel = resolveVideoModel(els.videoModel.value);
   settings.imageResponseFormat = els.imageResponseFormat.value;
   settings.pollInterval = normalizePollInterval(els.pollInterval.value);
   settings.customEndpoint = els.customEndpoint.value.trim();
@@ -2154,6 +2166,13 @@ function productVideoStatusText() {
 function renderProductVideoWorkspace() {
   const workspace = state.productVideoWorkspace;
   if (!els.productVideoWorkspace || !workspace) return;
+  const currentModel = resolveVideoModel(settings.videoModel);
+  const modernVideo = settings.provider !== "custom" && /^agnes-video-2\.5(?:-flash)?$/.test(currentModel);
+  const allowedResolutions = modernVideo ? (currentModel.endsWith("-flash") ? ["720p"] : ["720p", "1080p"]) : ["480p", "720p", "1080p"];
+  for (const option of els.productVideoResolution.options) option.disabled = !allowedResolutions.includes(option.value);
+  if (!allowedResolutions.includes(workspace.resolution)) workspace.resolution = "720p";
+  els.productVideoFps.closest("label").classList.toggle("hidden", modernVideo);
+  els.productVideoAudio.closest("label").classList.toggle("hidden", modernVideo);
   if (document.activeElement !== els.productVideoPrompt) els.productVideoPrompt.value = workspace.prompt || "";
   els.productVideoAspect.value = workspace.aspect;
   els.productVideoResolution.value = workspace.resolution;
@@ -2253,6 +2272,9 @@ function productVideoRequest(apiKey) {
   return {
     apiKey,
     model: settings.videoModel,
+    duration: workspace.duration,
+    resolution: workspace.resolution,
+    aspect: workspace.aspect,
     prompt: productVideoPrompt(),
     imageRefs: [workspace.productRef.url],
     imageRoles: ["product"],
@@ -2739,9 +2761,12 @@ function renderVideoSizeMenu(card) {
   const audio = card.generate_audio !== false;
   const aspect = card.aspect || "auto";
   const videoAspects = ASPECT_OPTIONS.filter(option => ["auto", "16:9", "4:3", "1:1", "3:4", "9:16", "21:9"].includes(option.id));
-  return `<section class="size-section"><h3>分辨率</h3><div class="video-resolution-grid">${VIDEO_RESOLUTION_OPTIONS.map(option => `<button type="button" class="size-choice ${option.id === resolution ? "selected" : ""}" data-size-action="videoResolution" data-value="${escapeAttr(option.id)}">${escapeHtml(option.label)}</button>`).join("")}</div></section>
-    <section class="size-section"><h3>生成时长</h3><div class="duration-grid">${VIDEO_DURATION_OPTIONS.map(value => `<button type="button" class="size-choice ${value === duration ? "selected" : ""}" data-size-action="duration" data-value="${value}">${value}s</button>`).join("")}</div></section>
-    <section class="size-section"><h3>生成视频音频</h3><div class="segmented-row two"><button type="button" class="size-choice ${audio ? "selected" : ""}" data-size-action="generate_audio" data-value="true">是</button><button type="button" class="size-choice ${!audio ? "selected" : ""}" data-size-action="generate_audio" data-value="false">否</button></div></section>
+  const modernVideo = settings.provider !== "custom" && /^agnes-video-2\.5(?:-flash)?$/.test(resolveVideoModel(card.model));
+  const resolutions = modernVideo ? VIDEO_RESOLUTION_OPTIONS.filter(option => (resolveVideoModel(card.model).endsWith("-flash") ? ["720p"] : ["720p", "1080p", "2k"]).includes(option.id)) : VIDEO_RESOLUTION_OPTIONS;
+  const durations = modernVideo ? VIDEO_DURATION_OPTIONS.filter(value => value <= 12) : VIDEO_DURATION_OPTIONS;
+  return `<section class="size-section"><h3>分辨率</h3><div class="video-resolution-grid">${resolutions.map(option => `<button type="button" class="size-choice ${option.id === resolution ? "selected" : ""}" data-size-action="videoResolution" data-value="${escapeAttr(option.id)}">${escapeHtml(option.label)}</button>`).join("")}</div></section>
+    <section class="size-section"><h3>生成时长</h3><div class="duration-grid">${durations.map(value => `<button type="button" class="size-choice ${value === duration ? "selected" : ""}" data-size-action="duration" data-value="${value}">${value}s</button>`).join("")}</div></section>
+    ${modernVideo ? '<p class="field-hint">帧率和音轨由模型决定；参考图需使用公网图片链接。</p>' : `<section class="size-section"><h3>生成视频音频</h3><div class="segmented-row two"><button type="button" class="size-choice ${audio ? "selected" : ""}" data-size-action="generate_audio" data-value="true">是</button><button type="button" class="size-choice ${!audio ? "selected" : ""}" data-size-action="generate_audio" data-value="false">否</button></div></section>`}
     <section class="size-section"><h3>比例</h3><div class="aspect-grid video-aspect-grid">${videoAspects.map(option => aspectButton(option, aspect)).join("")}</div></section>`;
 }
 
@@ -2800,13 +2825,14 @@ function renderInspector() {
   els.cardPrompt.value = card.prompt || "";
   const canGenerate = ["image", "video"].includes(card.type);
   els.generationFields.classList.toggle("hidden", !canGenerate);
+  document.getElementById("videoImageUrl").classList.toggle("hidden", card.type !== "video");
   els.videoFields.classList.add("hidden");
   renderSizePicker(card);
   els.videoFrames.value = card.num_frames || 121;
   els.videoFps.value = card.frame_rate || 24;
   els.negativePrompt.value = card.negative_prompt || "";
 
-  const modelOptions = card.type === "video" ? [settings.videoModel || "agnes-video-v2.0"] : ["agnes-image-2.1-flash", "agnes-image-2.0-flash"];
+  const modelOptions = card.type === "video" ? [...new Set([card.model, resolveVideoModel(settings.videoModel), "agnes-video-2.5-flash", "agnes-video-2.5"].filter(Boolean))] : ["agnes-image-2.1-flash", "agnes-image-2.0-flash"];
   els.cardModel.innerHTML = modelOptions.map(model => `<option value="${escapeAttr(model)}">${escapeHtml(model)}</option>`).join("");
   els.cardModel.value = card.model || modelOptions[0];
 
@@ -2904,12 +2930,25 @@ function setupSizePicker() {
 
 function bindInputs() {
   setupSizePicker();
+  document.getElementById("videoImageUrl").addEventListener("click", () => {
+    const target = selectedCard();
+    if (target?.type !== "video") return;
+    const url = window.prompt("填写 Agnes 可访问的 HTTP(S) 图片链接");
+    if (!url) return;
+    if (!/^https?:\/\//i.test(url.trim()) || !safeResultLink(url.trim())) { alert("请填写完整的 HTTP(S) 图片链接。"); return; }
+    const ref = createCard("upload", { title: "视频参考图", resultUrl: url.trim(), mime: "image/png", x: target.x - 360, y: target.y });
+    addEdge(ref.id, target.id); selectSingle(target.id); render(); save();
+  });
   const mappings = [[els.cardTitle, "title"], [els.cardPrompt, "prompt"], [els.cardModel, "model"], [els.videoFrames, "num_frames", value => value === "" ? 0 : Number(value)], [els.videoFps, "frame_rate", Number], [els.negativePrompt, "negative_prompt"]];
   mappings.forEach(([el, key, normalize]) => {
     const readValue = () => ({ [key]: normalize ? normalize(el.value) : el.value });
     el.addEventListener("input", () => updateSelected(readValue(), { render: false, deferSave: true }));
     el.addEventListener("change", () => {
       const patch = readValue();
+      const card = selectedCard();
+      if (key === "model" && card?.type === "video" && settings.provider !== "custom" && resolveVideoModel(patch.model) === "agnes-video-2.5-flash") {
+        patch.videoResolution = "720p"; patch.size = sizeForVideo(card.aspect, "720p"); patch.duration = Math.min(12, Math.max(4, Number(card.duration || 5)));
+      }
       if (key === "num_frames") {
         patch[key] = normalizeVideoFrameCount(patch[key]);
         el.value = String(patch[key]);
@@ -3036,6 +3075,14 @@ function setupToolbar() {
     });
   });
   els.productVideoUploadInput.addEventListener("change", handleProductVideoUpload);
+  document.getElementById("productVideoImageUrl").addEventListener("click", () => {
+    const url = window.prompt("填写 Agnes 可访问的 HTTP(S) 图片链接（不会自动上传本地图片到第三方）");
+    if (!url) return;
+    if (!/^https?:\/\//i.test(url.trim()) || !safeResultLink(url.trim())) { alert("请填写完整的 HTTP(S) 图片链接。"); return; }
+    state.productVideoWorkspace.productRef = { url: url.trim(), name: "图片链接", mime: "image/png" };
+    if (!state.productVideoWorkspace.task) { state.productVideoWorkspace.status = "idle"; state.productVideoWorkspace.error = ""; }
+    renderProductVideoWorkspace(); save();
+  });
   els.productVideoPrompt.addEventListener("input", event => {
     state.productVideoWorkspace.prompt = event.target.value;
     state.productVideoWorkspace.error = "";
@@ -3802,6 +3849,11 @@ function importJson(event) {
       validateCanvasImport(data);
       flushLocalSave();
       discardQueuedCanvasMutationsForStateReplacement("import");
+      if (data.settings && typeof data.settings === "object") {
+        for (const key of Object.keys(settings)) {
+          if (Object.prototype.hasOwnProperty.call(data.settings, key) && typeof data.settings[key] === typeof settings[key]) settings[key] = data.settings[key];
+        }
+      }
       if (Array.isArray(data.canvases)) {
         const imported = data.canvases.map(canvas => createCanvasRecord(canvas.name, canvas));
         if (!imported.length) throw new Error("文件中没有可用画布");
@@ -3819,11 +3871,6 @@ function importJson(event) {
         if (Array.isArray(data.groups)) state.groups = data.groups;
         if (Array.isArray(data.canvasSnapshots)) state.canvasSnapshots = normalizeCanvasSnapshots(data.canvasSnapshots);
         if (data.viewport) state.viewport = normalizeViewport(data.viewport);
-      }
-      if (data.settings && typeof data.settings === "object") {
-        for (const key of Object.keys(settings)) {
-          if (Object.prototype.hasOwnProperty.call(data.settings, key) && typeof data.settings[key] === typeof settings[key]) settings[key] = data.settings[key];
-        }
       }
       if (!Array.isArray(data.canvases)) {
         if (data.commerceWorkspace) state.commerceWorkspace = normalizeCommerceWorkspace(data.commerceWorkspace);
@@ -3932,9 +3979,22 @@ async function postJson(url, body, { flushLocalState = true } = {}) {
     }
     if (isUpstreamTimeout(error)) error.message = "Agnes 上游响应超时，请稍后重试。";
     if (isUpstreamNetworkError(error)) error.message = upstreamNetworkMessage(error);
+    if (isModelUnavailableError(error)) { error.message = modelUnavailableMessage(error, body); error.retryable = false; }
     throw error;
   }
   return data;
+}
+
+function isModelUnavailableError(error) {
+  return error?.upstreamCode === "model_not_found" || /no available channel for model|model_not_found/i.test(`${error?.upstreamMessage || ""} ${error?.message || ""}`);
+}
+
+function modelUnavailableMessage(error, body) {
+  const region = body?.agnesRegion || settings.agnesRegion;
+  const site = region === "china" ? "中国站 api.agnes-ai.cn" : "国际站 apihub.agnes-ai.com";
+  const model = String(body?.model || "当前模型");
+  const requestId = String(error.upstreamMessage || "").match(/request id:\s*([^\s)]+)/i)?.[1];
+  return `视频/图片模型 ${model} 在${site}的当前密钥分组没有可用通道（${error.upstreamStatus || error.status}）。${model === "agnes-video-v2.0" ? "该视频模型已退役，请升级并选择 agnes-video-2.5-flash。" : "请在 API 设置中检查密钥所属站点和模型权限，或等待服务商恢复该通道。"}不会自动切换模型或重复提交。${requestId ? `请求编号：${requestId}` : ""}`;
 }
 
 function isUpstreamNetworkError(error) {
@@ -4716,8 +4776,8 @@ async function generateAgnesVideo(card, apiKey, prompt, originCanvasId) {
   const { width, height } = parseSize(card.size);
   const numFrames = normalizeVideoFrameCount(card.num_frames, durationToFrames(card.duration, card.frame_rate));
   if (card.num_frames !== numFrames) updateCard(card.id, { num_frames: numFrames }, originCanvasId);
-  const context = { agnesRegion: settings.agnesRegion === "china" ? "china" : "global", model: card.model || settings.videoModel };
-  const created = await requestAgnesVideo({ apiKey, ...context, prompt, imageRefs: cardRefs(card), width, height, num_frames: normalizeVideoFrameCount(numFrames), frame_rate: card.frame_rate || 24, negative_prompt: card.negative_prompt, generate_audio: card.generate_audio }, {
+  const context = { agnesRegion: settings.agnesRegion === "china" ? "china" : "global", model: resolveVideoModel(card.model || settings.videoModel) };
+  const created = await requestAgnesVideo({ apiKey, ...context, prompt, duration: card.duration, resolution: card.videoResolution, aspect: card.aspect, imageRefs: cardRefs(card), width, height, num_frames: normalizeVideoFrameCount(numFrames), frame_rate: card.frame_rate || 24, negative_prompt: card.negative_prompt, generate_audio: card.generate_audio }, {
     isCancelled: () => originLibrary !== canvasLibrary,
     onQueueWait: ({ remainingSeconds, attempt, maxRetries }) => originLibrary === canvasLibrary && updateCard(card.id, {
       status: "running",

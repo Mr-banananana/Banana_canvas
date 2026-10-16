@@ -1135,7 +1135,7 @@ $checks = @(
   @{
     Name = 'canvas engine and app scripts are cache busted together'
     Pass = $html -match 'canvas-engine\.js\?v=canvas-interactions-5' -and
-      $html -match 'app\.js\?v=canvas-interactions-18'
+      $html -match 'app\.js\?v=canvas-interactions-19'
   },
   @{
     Name = 'wheel modifiers route to horizontal pan vertical pan and zoom'
@@ -2030,7 +2030,7 @@ $checks = @(
   },
   @{
     Name = 'video thumbnails suppress native media hover controls'
-    Pass = $html -match 'app\.js\?v=canvas-interactions-18' -and
+    Pass = $html -match 'app\.js\?v=canvas-interactions-19' -and
       $styles -match '\.commerce-asset-media\s*>\s*video\s*\{[\s\S]*?pointer-events:\s*none' -and
       $app -match 'disablepictureinpicture' -and
       $app -match 'disableremoteplayback'
@@ -2175,7 +2175,7 @@ $checks = @(
   },
   @{
     Name = 'prompt fixes are cache-busted in the served page'
-    Pass = $html -match 'app\.js\?v=canvas-interactions-18' -and $html -match 'styles\.css\?v=canvas-controls-15'
+    Pass = $html -match 'app\.js\?v=canvas-interactions-19' -and $html -match 'styles\.css\?v=canvas-controls-15'
   },
   @{
     Name = 'server exposes a deployment health endpoint'

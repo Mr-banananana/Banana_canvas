@@ -8,6 +8,8 @@ Banana Canvas 是一个免费开源、本地优先的 AI 无限画布。用户�
 
 其他架构：[ARM64](https://github.com/Mr-banananana/Banana_canvas/releases/latest/download/Banana-Canvas-windows-arm64.zip) · [32 位 x86](https://github.com/Mr-banananana/Banana_canvas/releases/latest/download/Banana-Canvas-windows-x86.zip) · [版本公告与所有下载](https://github.com/Mr-banananana/Banana_canvas/releases/latest)。Windows 支持 10/11；Windows 7/8 不在支持范围内。AI 生成仍需要联网和自己的 API Key。
 
+**视频模型更新（v1.0.7）**：Agnes 已[退役 Video v2.0](https://wiki.agnes-ai.com/en/docs/agnes-video-v20)，项目默认迁移至 [Video 2.5 Flash](https://wiki.agnes-ai.com/en/docs/agnes-video-25-flash)（720P、4–12 秒）。已有任务保留原模型查询。新版参考图需要公网 HTTP(S) 图片链接，可在视频节点或产品视频工作台填写；本地/Base64 图片暂不支持。若出现 `model_not_found`，请核对密钥所属站点和模型权限，上游没有可用通道时需要服务商恢复。
+
 ## 核心特点
 
 - 免费开源，本地运行，不需要云端账号。

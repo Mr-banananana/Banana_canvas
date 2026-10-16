@@ -481,6 +481,45 @@ async function handleAgnesPrompt(req, res) {
   sendJson(res, 200, { ok: true, provider: "agnes", request: body, response: data });
 }
 
+function buildAgnesVideoRequest(payload) {
+  const requestedModel = String(payload.model || "").trim();
+  const model = !requestedModel || requestedModel === "agnes-video-v2.0" ? "agnes-video-2.5-flash" : requestedModel;
+  const imageRefs = Array.isArray(payload.imageRefs) ? payload.imageRefs.filter(Boolean) : [];
+  if (!["agnes-video-2.5-flash", "agnes-video-2.5"].includes(model)) {
+    return compactObject({ model, prompt: String(payload.prompt || "").trim(), image: imageRefs.length === 1 ? imageRefs[0] : undefined,
+      width: Number(payload.width || 1152), height: Number(payload.height || 768), num_frames: normalizeVideoFrameCount(payload.num_frames, 121),
+      frame_rate: Number(payload.frame_rate || 24), negative_prompt: payload.negative_prompt || undefined,
+      generate_audio: typeof payload.generate_audio === "boolean" ? payload.generate_audio : undefined,
+      extra_body: imageRefs.length > 1 ? { image: imageRefs, mode: "keyframes" } : undefined });
+  }
+  const invalid = message => { throw Object.assign(new Error(message), { status: 400 }); };
+  const seconds = Number(payload.seconds ?? payload.duration ?? (payload.num_frames ? Math.round((Number(payload.num_frames) - 1) / Number(payload.frame_rate || 24)) : 5));
+  if (!Number.isInteger(seconds) || seconds < 4 || seconds > 12) invalid("Agnes Video 2.5 视频时长需为 4–12 秒。");
+  const size = String(payload.resolution || payload.size || "720P").toUpperCase();
+  const flash = model === "agnes-video-2.5-flash";
+  if (!(flash ? ["720P"] : ["720P", "1080P", "1K", "2K"]).includes(size)) invalid(flash ? "Agnes Video 2.5 Flash 仅支持 720P，请调整分辨率。" : "Agnes Video 2.5 分辨率需为 720P、1080P、1K 或 2K。");
+  const aspects = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"];
+  let aspect = payload.aspect || payload.aspect_ratio;
+  if (!aspect || aspect === "auto") {
+    const ratio = Number(payload.width || 1280) / Number(payload.height || 720);
+    aspect = aspects.reduce((best, next) => {
+      const value = key => { const [w,h] = key.split(":").map(Number); return Math.abs(w/h - ratio); };
+      return value(next) < value(best) ? next : best;
+    }, "16:9");
+  }
+  if (!aspects.includes(aspect)) invalid("Agnes Video 2.5 不支持这个视频比例，请选择 16:9、9:16、1:1、4:3、3:4 或 21:9。");
+  if (imageRefs.length > (flash ? 5 : 8)) invalid(`当前视频模型最多支持 ${flash ? 5 : 8} 张参考图，请减少图片连线。`);
+  for (const ref of imageRefs) {
+    if (typeof ref !== "string" || !/^https?:\/\//i.test(ref)) invalid("Agnes Video 2.5 的参考图需要公网可访问的 HTTP(S) 图片链接，暂不支持本地上传/Base64 图片。请使用返回 URL 的图片生成结果，或填写图片链接。");
+    try { new URL(ref); } catch { invalid("参考图片链接无效，请填写完整的 HTTP(S) URL。"); }
+  }
+  const prompt = [String(payload.prompt || "").trim(), payload.negative_prompt ? `Avoid: ${payload.negative_prompt}` : ""].filter(Boolean).join("\n");
+  return compactObject({ model, prompt, seconds: String(seconds), size, aspect_ratio: aspect, n: 1,
+    mode: imageRefs.length === 0 ? "text" : imageRefs.length === 1 ? "keyframe" : "reference",
+    first_frame: imageRefs.length === 1 ? imageRefs[0] : undefined,
+    images: imageRefs.length > 1 ? imageRefs : undefined });
+}
+
 async function handleAgnesVideo(req, res) {
   const payload = await parseBody(req);
   const apiKey = requireApiKey(payload);
@@ -490,19 +529,7 @@ async function handleAgnesVideo(req, res) {
     return;
   }
 
-  const imageRefs = Array.isArray(payload.imageRefs) ? payload.imageRefs.filter(Boolean) : [];
-  const body = compactObject({
-    model: payload.model || "agnes-video-v2.0",
-    prompt,
-    image: imageRefs.length === 1 ? imageRefs[0] : undefined,
-    width: Number(payload.width || 1152),
-    height: Number(payload.height || 768),
-    num_frames: normalizeVideoFrameCount(payload.num_frames, 121),
-    frame_rate: Number(payload.frame_rate || 24),
-    negative_prompt: payload.negative_prompt || undefined,
-    generate_audio: typeof payload.generate_audio === "boolean" ? payload.generate_audio : undefined,
-    extra_body: imageRefs.length > 1 ? { image: imageRefs, mode: "keyframes" } : undefined
-  });
+  const body = buildAgnesVideoRequest(payload);
 
   const data = await fetchJson(`${agnesBaseFor(payload)}/v1/videos`, {
     method: "POST",
@@ -523,7 +550,7 @@ async function handleAgnesVideoResult(req, res) {
   }
 
   const url = videoId
-    ? `${agnesBaseFor(payload)}/agnesapi?video_id=${encodeURIComponent(videoId)}&model_name=${encodeURIComponent(payload.model || "agnes-video-v2.0")}`
+    ? `${agnesBaseFor(payload)}/agnesapi?video_id=${encodeURIComponent(videoId)}&model_name=${encodeURIComponent(payload.model || "agnes-video-2.5-flash")}`
     : `${agnesBaseFor(payload)}/v1/videos/${encodeURIComponent(taskId)}`;
   const data = await fetchJson(url, {
     method: "GET",

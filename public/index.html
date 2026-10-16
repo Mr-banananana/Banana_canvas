@@ -168,6 +168,7 @@
                 <div class="refs dock-refs">
                   <div class="refs-title">参考图片 / 上游输入</div>
                   <div id="referenceList" class="reference-list"></div>
+                  <button id="videoImageUrl" class="text-btn hidden" type="button">添加视频参考图链接</button>
                 </div>
                 <div id="statusBox" class="status-box"></div>
               </div>
@@ -233,7 +234,7 @@
             <div class="commerce-workspace-heading">
               <span class="workflow-kicker">BANANA PRODUCT VIDEO</span>
               <h2>产品视频</h2>
-              <p>上传产品图，生成一条连续、清晰、适合电商使用的产品宣传视频。</p>
+              <p>选择产品图，生成产品宣传视频。Agnes Video 2.5 需使用公网图片链接，帧率和音轨由模型决定。</p>
             </div>
 
             <div class="commerce-workspace-section">
@@ -242,6 +243,7 @@
                 <span class="slot-media">＋</span><strong>上传产品图</strong><em>必填</em>
               </button>
               <input id="productVideoUploadInput" type="file" accept="image/*">
+              <button id="productVideoImageUrl" class="text-btn" type="button">使用图片链接</button>
             </div>
 
             <div class="commerce-workspace-section prompt-section">
@@ -323,7 +325,9 @@
           </label>
           <label>
             视频模型
-            <input id="videoModel" type="text" value="agnes-video-v2.0">
+            <input id="videoModel" type="text" value="agnes-video-2.5-flash" list="videoModelOptions">
+            <datalist id="videoModelOptions"><option value="agnes-video-2.5-flash"></option><option value="agnes-video-2.5"></option></datalist>
+            <span class="field-hint">v2.0 已退役，旧设置会迁移为 2.5 Flash（720P、4–12 秒）。标准 2.5 的权限和计费以所选站点为准。</span>
           </label>
           <label>
             图片返回
@@ -476,7 +480,7 @@
       })();
     </script>
     <script src="/canvas-engine.js?v=canvas-interactions-5"></script>
-    <script src="/app.js?v=canvas-interactions-18"></script>
+    <script src="/app.js?v=canvas-interactions-19"></script>
   </body>
 </html>
 

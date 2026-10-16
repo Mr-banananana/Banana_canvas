@@ -100,6 +100,33 @@ async function waitFor(probe) {
     })()`);
     assert.equal(recovered,result.url);
     console.log('PASS browser: backup imports into empty browser storage and survives switching canvases');
+    // Import a v1.0.5-style backup: its product task has IDs but no saved model.
+    const legacyBackup={schema:2,activeCanvasId:'legacy',settings:{provider:'agnes',videoModel:'agnes-video-v2.0'},canvases:[{id:'legacy',name:'legacy',
+      cards:[{id:'legacy-new',type:'video',model:'agnes-video-v2.0',prompt:'cat',status:'error',duration:15,videoResolution:'1080p'},
+        {id:'legacy-task',type:'video',model:'agnes-video-v2.0',task:{video_id:'paid-old'},status:'running'}],
+      productVideoWorkspace:{status:'running',task:{video_id:'paid-product-old'}}}]};
+    await cdp.evaluate(`importJson({target:{files:[new File([${JSON.stringify(JSON.stringify(legacyBackup))}],'old.json',{type:'application/json'})],value:'old'}})`);
+    await waitFor(()=>cdp.evaluate(`canvasLibrary.activeCanvasId==='legacy'`));
+    assert.deepEqual(await cdp.evaluate(`({setting:settings.videoModel,model:findCard('legacy-new').model,duration:findCard('legacy-new').duration,resolution:findCard('legacy-new').videoResolution,
+      task:findCard('legacy-task').task.model,product:state.productVideoWorkspace.task.model})`),
+      {setting:'agnes-video-2.5-flash',model:'agnes-video-2.5-flash',duration:12,resolution:'720p',task:'agnes-video-v2.0',product:'agnes-video-v2.0'});
+    console.log('PASS browser: old backup migrates new generations and preserves both old task models');
+    // Simulate the old on-disk settings to exercise startup migration separately.
+    await cdp.evaluate(`settings.videoModel='agnes-video-v2.0';state.productVideoWorkspace.task={video_id:'paid-product-old'};findCard('legacy-new').model='agnes-video-v2.0';
+      flushLocalSave();localStorage.setItem(SETTINGS_KEY,JSON.stringify(settings));`);
+    const legacyLoad=await cdp.evaluate('performance.timeOrigin');await cdp.send('Page.reload');
+    await waitFor(()=>cdp.evaluate(`performance.timeOrigin!==${legacyLoad} && typeof findCard==='function' && canvasLibrary.activeCanvasId==='legacy'`));
+    assert.deepEqual(await cdp.evaluate(`({setting:settings.videoModel,model:findCard('legacy-new').model,product:state.productVideoWorkspace.task.model})`),
+      {setting:'agnes-video-2.5-flash',model:'agnes-video-2.5-flash',product:'agnes-video-v2.0'});
+    console.log('PASS browser: startup migration preserves legacy product tasks with no stored model');
+    const channelError=await cdp.evaluate(`(async()=>{
+      const original=window.fetch;let calls=0,model;
+      window.fetch=async(url,options)=>{calls++;model=JSON.parse(options.body).model;return new Response(JSON.stringify({error:'Upstream API request failed.',details:{status:503,response:{error:{code:'model_not_found',message:'No available channel for model '+model+' under group default (request id: screenshot-regression)'}}}}),{status:503,headers:{'content-type':'application/json'}});};
+      try {els.apiKey.value='fixture-key';setApiKey('fixture-key');selectSingle('legacy-new');await generateSelected();return {calls,model,error:findCard('legacy-new').error,status:findCard('legacy-new').status};}
+      finally {window.fetch=original;}
+    })()`);
+    assert.equal(channelError.calls,1);assert.equal(channelError.model,'agnes-video-2.5-flash');assert.equal(channelError.status,'error');assert.match(channelError.error,/没有可用通道/);assert.match(channelError.error,/screenshot-regression/);
+    console.log('PASS browser: unavailable channel is actionable, preserves request ID and submits only once');
   } finally {
     if(cdp) {try{await cdp.send('Browser.close');}catch{}cdp.close();}
     if(edge)edge.kill();server.kill();
