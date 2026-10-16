@@ -66,7 +66,7 @@ http://localhost:5337
 Windows 用户不需要安装 npm，不需要 `npm install`，也不需要命令行：
 
 1. 在 GitHub 点击 `Code > Download ZIP` 并解压。
-2. 双击项目根目录的 `start.bat`。电脑已有 Node.js 时会自动查找 PATH 和常见安装位置；没有时会从 Node.js 官方站点下载 Node.js 22，并解压到项目的 `.runtime/` 目录。
+2. 双击项目根目录的 `start.bat`。电脑已有 Node.js 时会自动查找 PATH 和常见安装位置；没有时会依次从 Node.js 官方站点、npmmirror 或清华镜像下载 Node.js 22，并校验 SHA-256 后解压到项目的 `.runtime/` 目录。
 3. 首次自动下载需要网络连接和项目目录写权限；不会修改系统 PATH，也不需要管理员权限。准备完成后，后续启动可离线使用。
 4. 启动器会自动选择可用端口、等待健康检查通过，再打开浏览器。默认地址是 `http://localhost:5337/`；如果端口不可用，会自动尝试后续端口并显示实际地址。
 
@@ -82,11 +82,11 @@ Windows 用户不需要安装 npm，不需要 `npm install`，也不需要命令
 - 浏览器无法自动打开时，启动器会输出可手动访问的地址
 - PowerShell 用户也可以运行 `start.ps1`
 
-项目没有第三方 npm 依赖。Node.js 运行时仅在未检测到系统 Node.js 时下载，并保存在项目本地 `.runtime/` 目录。
+项目没有第三方 npm 依赖。Node.js 运行时仅在未检测到系统 Node.js 时下载，并保存在项目本地 `.runtime/` 目录；官方站点不可用时会自动尝试备用镜像。
 
 ### macOS 用户
 
-1. 下载并解压 ZIP；已有 Node.js 18+ 可直接复用，否则首次启动会自动下载官方 Node.js 22 运行时到项目 `.runtime/` 目录。
+1. 下载并解压 ZIP；已有 Node.js 18+ 可直接复用，否则首次启动会自动下载 Node.js 22 运行时到项目 `.runtime/` 目录，官方站点不可用时会切换备用镜像。
 2. 双击 `start.command`。
 3. 如果 macOS 阻止第一次打开，在文件上点击右键，选择“打开”；或者在终端执行：
 
