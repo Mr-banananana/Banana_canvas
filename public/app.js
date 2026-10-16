@@ -189,8 +189,9 @@ let canvasLibrary = {
   canvases: []
 };
 let assetDatabasePromise = null;
-const persistedWorkspaceAssetKeys = new Set();
+const persistedWorkspaceAssetUrls = new Map();
 const workspaceAssetWritePromises = new Map();
+const generationLocks = new Set();
 
 const settings = {
   provider: "agnes",
@@ -210,7 +211,8 @@ const MIN_VIDEO_POLL_INTERVAL = 12000;
 const MAX_VIDEO_POLL_INTERVAL = 60000;
 
 function normalizePollInterval(value) {
-  return Math.max(MIN_VIDEO_POLL_INTERVAL, Number(value || MIN_VIDEO_POLL_INTERVAL));
+  const interval = Number(value);
+  return Number.isFinite(interval) ? Math.min(MAX_VIDEO_POLL_INTERVAL, Math.max(MIN_VIDEO_POLL_INTERVAL, interval)) : MIN_VIDEO_POLL_INTERVAL;
 }
 const NODE_DEFS = {
   text: { title: "文本", label: "TEXT", w: 280, h: 240, prompt: "写一段用于生成视觉资产的提示词。" },
@@ -293,20 +295,22 @@ function assetRecordKey(canvasId, kind, resultId) {
 function persistWorkspaceAsset(canvasId, kind, result) {
   if (!assetDatabaseAvailable() || !canvasId || !result?.id || !result?.url || !result.url.startsWith("data:") || result.url.length <= INLINE_ASSET_STORAGE_LIMIT) return;
   const key = assetRecordKey(canvasId, kind, result.id);
-  if (persistedWorkspaceAssetKeys.has(key)) return;
+  if (persistedWorkspaceAssetUrls.get(key) === result.url) return;
   if (workspaceAssetWritePromises.has(key)) return;
+  const storedResult = cloneData(result);
   const write = openAssetDatabase().then(db => new Promise((resolve, reject) => {
     const transaction = db.transaction(ASSET_STORE_NAME, "readwrite");
     transaction.objectStore(ASSET_STORE_NAME).put({
       key,
       canvasId,
       kind,
-      result: cloneData(result)
+      result: storedResult
     });
     transaction.oncomplete = resolve;
     transaction.onerror = () => reject(transaction.error || new Error("IndexedDB write failed"));
+    transaction.onabort = () => reject(transaction.error || new Error("IndexedDB write aborted"));
   })).then(() => {
-    persistedWorkspaceAssetKeys.add(key);
+    persistedWorkspaceAssetUrls.set(key, storedResult.url);
     scheduleLocalSave(canvasId);
   }).catch(error => {
     console.warn("Large workspace asset remains inline because IndexedDB storage failed.", error);
@@ -326,7 +330,7 @@ function workspaceStorageSnapshot(workspace = {}, canvasId, kind) {
       const id = String(result?.id || uid("workspace-result"));
       const url = String(result?.url || "");
       const key = assetRecordKey(canvasId, kind, id);
-      return url.startsWith("data:") && url.length > INLINE_ASSET_STORAGE_LIMIT && persistedWorkspaceAssetKeys.has(key)
+      return url.startsWith("data:") && url.length > INLINE_ASSET_STORAGE_LIMIT && persistedWorkspaceAssetUrls.get(key) === url
         ? { ...result, id, url: `${ASSET_REF_PREFIX}${id}` }
         : { ...result, id };
     }) : []
@@ -344,14 +348,17 @@ async function hydratePersistedWorkspaceAssets() {
       request.onerror = () => reject(request.error || new Error("IndexedDB read failed"));
     });
     records.forEach(record => {
-      persistedWorkspaceAssetKeys.add(record.key);
       const target = canvasStateFor(record.canvasId);
       const workspace = record.kind === "product-video" ? target?.productVideoWorkspace : target?.commerceWorkspace;
       const result = record.result;
       if (!workspace || !result?.id || !result?.url) return;
       const index = workspace.results.findIndex(item => item.id === result.id);
-      if (index >= 0) workspace.results[index] = { ...workspace.results[index], ...result };
-      else workspace.results.unshift(result);
+      if (index < 0) return;
+      const current = workspace.results[index];
+      const key = assetRecordKey(record.canvasId, record.kind, result.id);
+      if (current.url === `${ASSET_REF_PREFIX}${result.id}`) current.url = result.url;
+      if (current.url === result.url) persistedWorkspaceAssetUrls.set(key, result.url);
+      else persistedWorkspaceAssetUrls.delete(key);
     });
   } catch (error) {
     console.warn("Temporary asset recovery unavailable; local URL snapshots will still be used.", error);
@@ -483,8 +490,8 @@ function captureCurrentCanvas() {
     canvasSnapshots: state.canvasSnapshots,
     viewport: state.viewport,
     workspaceMode: state.workspaceMode,
-    commerceWorkspace: workspaceStorageSnapshot(state.commerceWorkspace, canvasLibrary.activeCanvasId, "commerce"),
-    productVideoWorkspace: workspaceStorageSnapshot(state.productVideoWorkspace, canvasLibrary.activeCanvasId, "product-video")
+    commerceWorkspace: cloneData(state.commerceWorkspace),
+    productVideoWorkspace: cloneData(state.productVideoWorkspace)
   });
 }
 
@@ -524,6 +531,9 @@ function captureLocalSavePayload(canvasId = canvasLibrary.activeCanvasId) {
   const index = canvasLibrary.canvases.findIndex(canvas => canvas.id === canvasLibrary.activeCanvasId);
   if (index >= 0) canvasLibrary.canvases[index] = current;
   else canvasLibrary.canvases.push(current);
+  for (const canvas of canvasLibrary.canvases) {
+    persistWorkspaceAssetsForCanvas(canvas.id, canvas.commerceWorkspace, canvas.productVideoWorkspace);
+  }
   return {
     canvasId,
     activeCanvasId: current.id,
@@ -531,7 +541,11 @@ function captureLocalSavePayload(canvasId = canvasLibrary.activeCanvasId) {
     library: cloneData({
       schema: CANVAS_LIBRARY_SCHEMA,
       activeCanvasId: canvasLibrary.activeCanvasId,
-      canvases: canvasLibrary.canvases
+      canvases: canvasLibrary.canvases.map(canvas => ({
+        ...canvas,
+        commerceWorkspace: workspaceStorageSnapshot(canvas.commerceWorkspace, canvas.id, "commerce"),
+        productVideoWorkspace: workspaceStorageSnapshot(canvas.productVideoWorkspace, canvas.id, "product-video")
+      }))
     })
   };
 }
@@ -795,12 +809,18 @@ function normalizeCard(card) {
   }
   card.refs = Array.isArray(card.refs) ? card.refs : [];
   card.status = card.status || "idle";
+  if (card.status === "done") card.task = null;
   card.progress = Number(card.progress || 0);
-  card.resultUrl = card.resultUrl || "";
-  card.mime = card.mime || "";
-  card.prompt = card.prompt || "";
-  card.title = card.title || def.title;
-  card.model = card.model || (card.type === "video" ? settings.videoModel : settings.imageModel);
+  card.resultUrl = String(card.resultUrl || "");
+  card.mime = String(card.mime || "");
+  card.prompt = String(card.prompt || "");
+  card.title = String(card.title || def.title);
+  card.model = String(card.model || (card.type === "video" ? settings.videoModel : settings.imageModel));
+  if (card.task && typeof card.task === "object" && (card.task.video_id || card.task.task_id)) {
+    card.task = { ...card.task, video_id: String(card.task.video_id || ""), task_id: String(card.task.task_id || ""),
+      agnesRegion: card.task.agnesRegion === "china" ? "china" : card.task.agnesRegion === "global" ? "global" : settings.agnesRegion === "china" ? "china" : "global",
+      model: String(card.task.model || card.model) };
+  } else card.task = null;
   card.aspect = card.aspect || aspectFromSize(card.size || (card.type === "video" ? "1280x720" : "1024x768"));
   card.imageQuality = card.imageQuality || "medium";
   card.imageResolution = card.imageResolution || (card.type === "commerce" ? "2k" : "1k");
@@ -1063,7 +1083,10 @@ function normalizeProductVideoWorkspace(workspace = {}) {
   const task = workspace.task && typeof workspace.task === "object"
     ? {
       video_id: String(workspace.task.video_id || ""),
-      task_id: String(workspace.task.task_id || "")
+      task_id: String(workspace.task.task_id || ""),
+      agnesRegion: workspace.task.agnesRegion === "china" ? "china" : workspace.task.agnesRegion === "global" ? "global" : settings.agnesRegion === "china" ? "china" : "global",
+      model: String(workspace.task.model || settings.videoModel),
+      prompt: String(workspace.task.prompt || workspace.prompt || "")
     }
     : null;
   return {
@@ -1076,7 +1099,7 @@ function normalizeProductVideoWorkspace(workspace = {}) {
     duration: [4, 5, 6, 8].includes(Number(workspace.duration)) ? Number(workspace.duration) : 5,
     fps: [24, 30].includes(Number(workspace.fps)) ? Number(workspace.fps) : 24,
     generateAudio: workspace.generateAudio === true,
-    status: validStatus.includes(workspace.status) ? workspace.status : "idle",
+    status: validStatus.includes(workspace.status) ? workspace.status : task?.video_id || task?.task_id ? "error" : "idle",
     progress: Math.max(0, Math.min(100, Number(workspace.progress || 0))),
     error: String(workspace.error || ""),
     task: task?.video_id || task?.task_id ? task : null,
@@ -2120,6 +2143,7 @@ function productVideoPrompt() {
 
 function productVideoStatusText() {
   const workspace = state.productVideoWorkspace;
+  if (workspace.task && !generationLocks.has(JSON.stringify(["product-video", canvasLibrary.activeCanvasId]))) return workspace.error || "已有视频任务，可点击继续查询，不会重新提交生成。";
   if (workspace.status === "running") return workspace.error || (workspace.progress ? `正在生成产品视频… ${Math.round(workspace.progress)}%` : "正在创建产品视频任务…");
   if (workspace.status === "error") return workspace.error || "产品视频生成失败，请重试。";
   if (!workspace.productRef) return "先上传产品图，再开始生成。";
@@ -2138,7 +2162,8 @@ function renderProductVideoWorkspace() {
   els.productVideoAudio.value = String(workspace.generateAudio);
   els.productVideoStatus.textContent = productVideoStatusText();
   els.productVideoStatus.className = `commerce-workspace-status ${workspace.status === "error" ? "error" : workspace.status === "running" ? "running" : workspace.results.length ? "success" : ""}`;
-  els.productVideoGenerate.disabled = workspace.status === "running" || !workspace.productRef;
+  els.productVideoGenerate.disabled = generationLocks.has(JSON.stringify(["product-video", canvasLibrary.activeCanvasId])) || (!workspace.productRef && !workspace.task);
+  els.productVideoGenerate.querySelector("span").textContent = workspace.task ? "继续查询视频任务" : "生成产品视频";
   document.querySelectorAll("[data-product-video-slot]").forEach(button => {
     button.classList.toggle("error", workspace.status === "error" && !workspace.productRef);
     button.innerHTML = productVideoSlotMarkup();
@@ -2199,6 +2224,8 @@ async function downloadProductVideoResult(id) {
 }
 
 function handleProductVideoUpload(event) {
+  const originCanvasId = canvasLibrary.activeCanvasId;
+  const originLibrary = canvasLibrary;
   const file = event.target.files?.[0];
   event.target.value = "";
   if (!file) return;
@@ -2210,13 +2237,12 @@ function handleProductVideoUpload(event) {
   }
   const reader = new FileReader();
   reader.onload = () => {
-    state.productVideoWorkspace.productRef = { url: reader.result, name: file.name, mime: file.type };
-    state.productVideoWorkspace.status = "idle";
-    state.productVideoWorkspace.progress = 0;
-    state.productVideoWorkspace.error = "";
-    state.productVideoWorkspace.task = null;
-    renderProductVideoWorkspace();
-    save();
+    if (originLibrary !== canvasLibrary) return;
+    mutateCanvasById(originCanvasId, target => {
+      const workspace = target.productVideoWorkspace;
+      workspace.productRef = { url: reader.result, name: file.name, mime: file.type };
+      if (!workspace.task) { workspace.status = "idle"; workspace.progress = 0; workspace.error = ""; }
+    }, renderProductVideoWorkspace);
   };
   reader.readAsDataURL(file);
 }
@@ -2252,8 +2278,13 @@ function storeProductVideoResult(url, prompt, canvasId = canvasLibrary.activeCan
 
 async function generateProductVideo() {
   const originCanvasId = canvasLibrary.activeCanvasId;
+  const originLibrary = canvasLibrary;
   const workspace = state.productVideoWorkspace;
-  if (!workspace.productRef || workspace.status === "running") return;
+  if (!workspace.productRef && !workspace.task) return;
+  const lockKey = JSON.stringify(["product-video", originCanvasId]);
+  if (generationLocks.has(lockKey)) return;
+  generationLocks.add(lockKey);
+  try {
   collectSettings();
   if (settings.provider !== "agnes") {
     workspace.status = "error";
@@ -2269,27 +2300,40 @@ async function generateProductVideo() {
     els.settingsModal.classList.remove("hidden");
     return;
   }
+  if (workspace.task?.video_id || workspace.task?.task_id) {
+    workspace.status = "running";
+    workspace.error = "继续查询已有任务，不会重新提交生成。";
+    renderProductVideoWorkspace();
+    try { await pollProductVideo(apiKey, originCanvasId, workspace.task.prompt || workspace.prompt, workspace.task); }
+    catch (error) {
+      if (originLibrary !== canvasLibrary) return;
+      mutateCanvasById(originCanvasId, target => { target.productVideoWorkspace.status = "error"; target.productVideoWorkspace.error = error.message; }, renderProductVideoWorkspace);
+    }
+    return;
+  }
   workspace.status = "running";
   workspace.progress = 8;
   workspace.error = "";
   renderProductVideoWorkspace();
   save();
-  const request = productVideoRequest(apiKey);
+  const request = { ...productVideoRequest(apiKey), agnesRegion: settings.agnesRegion === "china" ? "china" : "global" };
   const resultPrompt = request.prompt;
   try {
     const created = await requestAgnesVideo(request, {
-      onQueueWait: ({ remainingSeconds, attempt, maxRetries }) => mutateCanvasById(originCanvasId, targetState => {
+      isCancelled: () => originLibrary !== canvasLibrary,
+      onQueueWait: ({ remainingSeconds, attempt, maxRetries }) => originLibrary === canvasLibrary && mutateCanvasById(originCanvasId, targetState => {
         targetState.productVideoWorkspace.status = "running";
         targetState.productVideoWorkspace.progress = 8;
         targetState.productVideoWorkspace.error = videoQueueFullMessage(remainingSeconds, attempt, maxRetries);
       }, renderProductVideoWorkspace)
     });
+    if (originLibrary !== canvasLibrary) return;
     const response = created.response || {};
     const directUrl = response.url || response.video_url || response.result?.url;
     if (directUrl) {
       storeProductVideoResult(directUrl, resultPrompt, originCanvasId);
     } else {
-      const task = { video_id: response.video_id, task_id: response.task_id || response.id };
+      const task = { video_id: response.video_id, task_id: response.task_id || response.id, agnesRegion: request.agnesRegion, model: request.model, prompt: resultPrompt };
       if (!task.video_id && !task.task_id) throw new Error("Agnes 视频 API 未返回任务 ID。 ");
       mutateCanvasById(originCanvasId, targetState => {
         targetState.productVideoWorkspace.task = task;
@@ -2298,27 +2342,46 @@ async function generateProductVideo() {
       await pollProductVideo(apiKey, originCanvasId, resultPrompt, task);
     }
   } catch (error) {
+    if (originLibrary !== canvasLibrary) return;
     mutateCanvasById(originCanvasId, targetState => {
       targetState.productVideoWorkspace.status = "error";
       targetState.productVideoWorkspace.error = error.message || "产品视频生成失败。";
-      targetState.productVideoWorkspace.task = null;
     }, renderProductVideoWorkspace);
+  }
+  } finally {
+    generationLocks.delete(lockKey);
+    if (canvasLibrary.activeCanvasId === originCanvasId) renderProductVideoWorkspace();
   }
 }
 
 async function pollProductVideo(apiKey, originCanvasId = canvasLibrary.activeCanvasId, resultPrompt = "", initialTask = null) {
   const maxAttempts = 120;
+  const task = cloneData(initialTask || canvasStateFor(originCanvasId)?.productVideoWorkspace?.task || {});
+  if (!task.video_id && !task.task_id) return;
+  task.agnesRegion = task.agnesRegion || (settings.agnesRegion === "china" ? "china" : "global");
+  task.model = task.model || settings.videoModel;
+  const originLibrary = canvasLibrary;
+  let pendingTask = !canvasStateFor(originCanvasId)?.productVideoWorkspace?.task && Boolean(initialTask);
+  const taskKey = JSON.stringify([task.video_id || "", task.task_id || ""]);
+  const stillCurrent = () => {
+    const current = canvasStateFor(originCanvasId)?.productVideoWorkspace;
+    if (!current || originLibrary !== canvasLibrary) return false;
+    if (!current.task) return pendingTask;
+    pendingTask = false;
+    return JSON.stringify([current.task.video_id || "", current.task.task_id || ""]) === taskKey;
+  };
   let delay = normalizePollInterval(settings.pollInterval);
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const workspace = canvasStateFor(originCanvasId)?.productVideoWorkspace;
     if (!workspace) return;
-    const task = cloneData(workspace.task || initialTask);
-    if (!task?.video_id && !task?.task_id) return;
+    if (!stillCurrent()) return;
     await sleep(delay);
+    if (!stillCurrent()) return;
     let data;
     try {
-      data = await postJson("/api/agnes/video-result", { apiKey, model: settings.videoModel, video_id: task.video_id, task_id: task.task_id }, { flushLocalState: false });
+      data = await postJson("/api/agnes/video-result", { apiKey, agnesRegion: task.agnesRegion, model: task.model || settings.videoModel, video_id: task.video_id, task_id: task.task_id }, { flushLocalState: false });
     } catch (error) {
+      if (!stillCurrent()) return;
       if (isRateLimitError(error)) {
         delay = Math.min(MAX_VIDEO_POLL_INTERVAL, Math.max(Math.round(delay * 1.8), 15000));
         mutateCanvasById(originCanvasId, targetState => {
@@ -2329,6 +2392,7 @@ async function pollProductVideo(apiKey, originCanvasId = canvasLibrary.activeCan
       }
       throw error;
     }
+    if (!stillCurrent()) return;
     delay = normalizePollInterval(settings.pollInterval);
     const result = data.response || {};
     const status = result.status || "running";
@@ -2336,9 +2400,12 @@ async function pollProductVideo(apiKey, originCanvasId = canvasLibrary.activeCan
       storeProductVideoResult(result.url, resultPrompt, originCanvasId);
       return;
     }
-    if (status === "failed") throw new Error(result.error ? JSON.stringify(result.error) : "Agnes 产品视频生成失败。");
+    if (status === "failed") {
+      mutateCanvasById(originCanvasId, target => { target.productVideoWorkspace.task = null; }, renderProductVideoWorkspace);
+      throw new Error(result.error ? JSON.stringify(result.error) : "Agnes 产品视频生成失败。");
+    }
     mutateCanvasById(originCanvasId, targetState => {
-      targetState.productVideoWorkspace.status = status;
+      targetState.productVideoWorkspace.status = "running";
       targetState.productVideoWorkspace.progress = Number(result.progress ?? Math.min(95, 20 + attempt * 3));
       targetState.productVideoWorkspace.error = "";
     }, renderProductVideoWorkspace);
@@ -2769,6 +2836,8 @@ function renderInspector() {
   els.statusBox.textContent = statusText;
   els.statusBox.classList.toggle("error", card.status === "error");
   const resultLink = safeResultLink(card.resultUrl);
+  els.generateBtn.disabled = generationLocks.has(JSON.stringify(["node", canvasLibrary.activeCanvasId, card.id]));
+  els.generateBtn.querySelector("span").textContent = card.type === "video" && card.task ? "继续查询视频任务" : "生成资产";
   els.resultBox.innerHTML = resultLink ? `<a href="${escapeAttr(resultLink)}" target="_blank" rel="noreferrer">打开生成结果</a>` : card.resultUrl ? "结果已生成，无法作为网页链接直接打开。" : "";
   requestAnimationFrame(() => {
     if (state.selectedId === card.id) {
@@ -3671,8 +3740,19 @@ function fitView() {
   save();
 }
 
-function exportJson() {
+async function exportJson() {
+  try {
   flushLocalSave();
+  await Promise.all([...workspaceAssetWritePromises.values()]);
+  await hydratePersistedWorkspaceAssets();
+  flushLocalSave();
+  for (const canvas of canvasLibrary.canvases) {
+    for (const workspace of [canvas.commerceWorkspace, canvas.productVideoWorkspace]) {
+      if (workspace?.results?.some(result => String(result.url).startsWith(ASSET_REF_PREFIX))) {
+        throw new Error("部分本地图片/视频资产已缺失，无法导出完整备份。请恢复原浏览器数据或重新导入原始资产。");
+      }
+    }
+  }
   const blob = new Blob([JSON.stringify({
     schema: CANVAS_LIBRARY_SCHEMA,
     activeCanvasId: canvasLibrary.activeCanvasId,
@@ -3685,6 +3765,30 @@ function exportJson() {
   link.download = `banana-canvas-${Date.now()}.json`;
   link.click();
   URL.revokeObjectURL(url);
+  } catch (error) { alert(`导出失败：${error.message}`); }
+}
+
+function validateCanvasImport(data) {
+  const isRecord = value => value && typeof value === "object" && !Array.isArray(value);
+  if (!isRecord(data)) throw new Error("文件不是有效的画布对象。");
+  const canvases = Array.isArray(data.canvases) ? data.canvases : Array.isArray(data.cards) && !Object.prototype.hasOwnProperty.call(data, "canvases") ? [data] : null;
+  if (!canvases?.length) throw new Error("文件中没有有效画布。");
+  const canvasIds = new Set();
+  for (const canvas of canvases) {
+    if (!isRecord(canvas)) throw new Error("画布列表含无效记录。");
+    if (canvas.id) {
+      if (canvasIds.has(String(canvas.id))) throw new Error("画布 ID 重复，无法安全导入。");
+      canvasIds.add(String(canvas.id));
+    }
+    for (const field of ["cards", "edges", "groups"]) {
+      if (canvas[field] !== undefined && (!Array.isArray(canvas[field]) || canvas[field].some(item => !isRecord(item)))) throw new Error(`画布 ${field} 含无效记录。`);
+    }
+    const cardIds = new Set();
+    for (const card of canvas.cards || []) {
+      if (card.id && cardIds.has(String(card.id))) throw new Error("节点 ID 重复，无法安全导入。");
+      if (card.id) cardIds.add(String(card.id));
+    }
+  }
 }
 
 function importJson(event) {
@@ -3695,6 +3799,7 @@ function importJson(event) {
   reader.onload = () => {
     try {
       const data = JSON.parse(reader.result);
+      validateCanvasImport(data);
       flushLocalSave();
       discardQueuedCanvasMutationsForStateReplacement("import");
       if (Array.isArray(data.canvases)) {
@@ -3708,13 +3813,18 @@ function importJson(event) {
         if (!canvasLibrary.canvases.some(canvas => canvas.id === canvasLibrary.activeCanvasId)) canvasLibrary.activeCanvasId = canvasLibrary.canvases[0].id;
         applyCanvasRecord(activeCanvasRecord());
       } else {
+        canvasLibrary = { ...canvasLibrary };
         if (Array.isArray(data.cards)) state.cards = data.cards;
         if (Array.isArray(data.edges)) state.edges = data.edges;
         if (Array.isArray(data.groups)) state.groups = data.groups;
         if (Array.isArray(data.canvasSnapshots)) state.canvasSnapshots = normalizeCanvasSnapshots(data.canvasSnapshots);
         if (data.viewport) state.viewport = normalizeViewport(data.viewport);
       }
-      if (data.settings) Object.assign(settings, data.settings);
+      if (data.settings && typeof data.settings === "object") {
+        for (const key of Object.keys(settings)) {
+          if (Object.prototype.hasOwnProperty.call(data.settings, key) && typeof data.settings[key] === typeof settings[key]) settings[key] = data.settings[key];
+        }
+      }
       if (!Array.isArray(data.canvases)) {
         if (data.commerceWorkspace) state.commerceWorkspace = normalizeCommerceWorkspace(data.commerceWorkspace);
         if (data.productVideoWorkspace) state.productVideoWorkspace = normalizeProductVideoWorkspace(data.productVideoWorkspace);
@@ -3727,6 +3837,7 @@ function importJson(event) {
       save();
     } catch (error) { alert(`导入失败：${error.message}`); }
   };
+  reader.onerror = () => alert("导入失败：无法读取文件，请检查文件权限或重新选择。");
   reader.readAsText(file);
   event.target.value = "";
 }
@@ -3786,11 +3897,15 @@ async function postJson(url, body, { flushLocalState = true } = {}) {
   let response;
   try {
     const requestBody = url.startsWith("/api/agnes/")
-      ? { ...body, agnesRegion: settings.agnesRegion === "china" ? "china" : "global" }
+      ? { ...body, agnesRegion: body?.agnesRegion === "china" ? "china" : body?.agnesRegion === "global" ? "global" : settings.agnesRegion === "china" ? "china" : "global" }
       : body;
     response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requestBody) });
   } catch (cause) {
     const error = new Error("本地服务连接中断，请确认 Banana Canvas 服务仍在运行后重试。");
+    if (["/api/agnes/image", "/api/agnes/video", "/api/custom"].includes(url)) {
+      error.submissionUnknown = true;
+      error.message += "生成请求的提交结果尚未确认，请先查看上游控制台，避免重复提交。";
+    }
     error.networkCode = cause?.cause?.code || cause?.code || "LOCAL_SERVICE_UNAVAILABLE";
     error.retryable = true;
     throw error;
@@ -3810,6 +3925,7 @@ async function postJson(url, body, { flushLocalState = true } = {}) {
       : data.details?.response?.error?.message || data.details?.response?.message || "";
     error.networkCode = data.code || "";
     error.retryable = Boolean(data.retryable);
+    error.submissionUnknown = Boolean(data.submissionUnknown);
     error.retryAfterSeconds = Number(data.retryAfterSeconds || data.details?.retryAfterSeconds || 0) || 0;
     if (upstreamUnauthorized) {
       error.message = "Agnes API Key 验证失败（401）。请确认“Agnes 服务站点”与密钥所属站点一致，并检查密钥是否有效；可在对应 Agnes 控制台重新创建密钥后再试。不要把 API Key 发给他人。";
@@ -3828,6 +3944,7 @@ function isUpstreamNetworkError(error) {
 }
 
 function upstreamNetworkMessage(error) {
+  if (error?.submissionUnknown) return "生成请求的提交结果未确认。请先查看 Agnes 控制台是否已有任务或结果，再决定是否重新生成，避免重复提交。";
   const code = String(error?.networkCode || "");
   if (code === "ECONNRESET" || /网络连接被重置/i.test(String(error?.message || ""))) {
     return "连接 Agnes 时出现网络波动，网络连接被重置。系统已自动重试；仍未成功，请稍后再次点击生成。";
@@ -3882,9 +3999,11 @@ function videoQueueRetryDelay(error, attempt) {
   return [5000, 10000, 20000][attempt] || 20000;
 }
 
-async function requestAgnesVideo(body, { onQueueWait } = {}) {
+async function requestAgnesVideo(body, { onQueueWait, isCancelled } = {}) {
+  body = { ...body, agnesRegion: body.agnesRegion || (settings.agnesRegion === "china" ? "china" : "global") };
   const maxRetries = 3;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    if (isCancelled?.()) throw new Error("画布已替换，停止提交旧的视频任务。");
     try {
       return await postJson("/api/agnes/video", body);
     } catch (error) {
@@ -3895,6 +4014,7 @@ async function requestAgnesVideo(body, { onQueueWait } = {}) {
       const delayMs = videoQueueRetryDelay(error, attempt);
       const startedAt = Date.now();
       while (Date.now() - startedAt < delayMs) {
+        if (isCancelled?.()) throw new Error("画布已替换，停止提交旧的视频任务。");
         const remainingSeconds = Math.max(1, Math.ceil((delayMs - (Date.now() - startedAt)) / 1000));
         onQueueWait?.({ remainingSeconds, attempt: attempt + 1, maxRetries });
         await sleep(Math.min(1000, delayMs));
@@ -4053,6 +4173,8 @@ function openProductVideoPreview(id) {
 }
 
 function handleCommerceWorkspaceUpload(event) {
+  const originCanvasId = canvasLibrary.activeCanvasId;
+  const originLibrary = canvasLibrary;
   const file = event.target.files?.[0];
   const role = state.commerceWorkspace.activeSlot || "product";
   event.target.value = "";
@@ -4065,19 +4187,21 @@ function handleCommerceWorkspaceUpload(event) {
   }
   const reader = new FileReader();
   reader.onload = () => {
-    state.commerceWorkspace[`${role}Ref`] = { url: reader.result, name: file.name, mime: file.type };
-    state.commerceWorkspace.status = "idle";
-    state.commerceWorkspace.error = "";
-    state.commerceWorkspace.promptStatus = "idle";
-    state.commerceWorkspace.promptError = "";
-    renderCommerceWorkspace();
-    save();
+    if (originLibrary !== canvasLibrary) return;
+    mutateCanvasById(originCanvasId, targetState => {
+      targetState.commerceWorkspace[`${role}Ref`] = { url: reader.result, name: file.name, mime: file.type };
+      if (targetState.commerceWorkspace.status !== "running") targetState.commerceWorkspace.status = "idle";
+      targetState.commerceWorkspace.error = "";
+      if (targetState.commerceWorkspace.promptStatus !== "running") targetState.commerceWorkspace.promptStatus = "idle";
+      targetState.commerceWorkspace.promptError = "";
+    }, renderCommerceWorkspace);
   };
   reader.readAsDataURL(file);
 }
 
 async function generateCommerceWorkspacePrompt() {
   const originCanvasId = canvasLibrary.activeCanvasId;
+  const originLibrary = canvasLibrary;
   const workspace = state.commerceWorkspace;
   if (!workspace.productRef || workspace.promptMode !== "auto" || workspace.promptStatus === "running") return;
   collectSettings();
@@ -4106,6 +4230,7 @@ async function generateCommerceWorkspacePrompt() {
       imageRefs: refs.imageRefs,
       imageRoles: refs.imageRoles
     });
+    if (originLibrary !== canvasLibrary) return;
     const generated = cleanGeneratedPrompt(promptResultText(data));
     if (!generated) throw new Error(promptResponseError(data));
     mutateCanvasById(originCanvasId, targetState => {
@@ -4115,6 +4240,7 @@ async function generateCommerceWorkspacePrompt() {
       targetState.commerceWorkspace.promptError = "";
     }, renderCommerceWorkspace);
   } catch (error) {
+    if (originLibrary !== canvasLibrary) return;
     mutateCanvasById(originCanvasId, targetState => {
       targetState.commerceWorkspace.promptStatus = "error";
       targetState.commerceWorkspace.promptError = isContentPolicyViolation(error) ? commercePolicyErrorMessage() : error.message || "Agnes 提示词生成失败。";
@@ -4124,6 +4250,7 @@ async function generateCommerceWorkspacePrompt() {
 
 async function generateCommerceWorkspacePromo() {
   const originCanvasId = canvasLibrary.activeCanvasId;
+  const originLibrary = canvasLibrary;
   const workspace = state.commerceWorkspace;
   if (!workspace.productRef || workspace.status === "running" || (workspace.promptMode === "auto" && !workspace.prompt.trim())) return;
   collectSettings();
@@ -4145,6 +4272,7 @@ async function generateCommerceWorkspacePromo() {
   try {
     let result;
     if (settings.provider === "custom") {
+      const resultPath = settings.customResultPath;
       let bodyTemplate = {};
       try { bodyTemplate = JSON.parse(settings.customBody || "{}"); } catch { throw new Error("自定义 Body Template 不是合法 JSON。"); }
       const data = await postJson("/api/custom", {
@@ -4159,11 +4287,13 @@ async function generateCommerceWorkspacePromo() {
         imageRefs: refs.imageRefs,
         imageRoles: refs.imageRoles
       });
-      const url = pathGet(data.response, settings.customResultPath);
+      if (originLibrary !== canvasLibrary) return;
+      const url = pathGet(data.response, resultPath);
       if (!url) throw new Error("自定义 API 没有按结果字段路径返回资产 URL。");
       result = { url, mime: "image/png" };
     } else {
       const imageResponse = await requestCommerceImage(imageRequest);
+      if (originLibrary !== canvasLibrary) return;
       result = imageResultUrl(imageResponse.data);
       if (!result) throw new Error("图片 API 未返回可用的图片 URL。");
       result.prompt = imageResponse.prompt;
@@ -4174,6 +4304,7 @@ async function generateCommerceWorkspacePromo() {
       targetState.commerceWorkspace.error = "";
     }, renderCommerceWorkspace);
   } catch (error) {
+    if (originLibrary !== canvasLibrary) return;
     mutateCanvasById(originCanvasId, targetState => {
       targetState.commerceWorkspace.status = "error";
       targetState.commerceWorkspace.error = error.message || "电商宣传图生成失败。";
@@ -4368,8 +4499,9 @@ function promptHintFor(target, currentValue = "") {
 
 async function generateCommercePrompt() {
   const originCanvasId = canvasLibrary.activeCanvasId;
+  const originLibrary = canvasLibrary;
   const card = selectedCommerceCard();
-  if (!card || card.commercePromptMode !== "auto") return;
+  if (!card || card.commercePromptMode !== "auto" || card.promptStatus === "running") return;
   collectSettings();
   const apiKey = getApiKey();
   if (!card.productRef?.url) {
@@ -4404,6 +4536,7 @@ async function generateCommercePrompt() {
       imageRefs: refs.imageRefs,
       imageRoles: refs.imageRoles
     });
+    if (originLibrary !== canvasLibrary) return;
     const generated = cleanGeneratedPrompt(promptResultText(data));
     if (!generated) throw new Error(promptResponseError(data));
     mutateCanvasById(originCanvasId, targetState => {
@@ -4415,6 +4548,7 @@ async function generateCommercePrompt() {
       targetCard.promptError = "";
     });
   } catch (error) {
+    if (originLibrary !== canvasLibrary) return;
     mutateCanvasById(originCanvasId, targetState => {
       const targetCard = targetState.cards.find(item => item.id === card.id);
       if (!targetCard) return;
@@ -4433,8 +4567,9 @@ function imageResultUrl(data) {
 
 async function generateCommercePromo() {
   const originCanvasId = canvasLibrary.activeCanvasId;
+  const originLibrary = canvasLibrary;
   const card = selectedCommerceCard();
-  if (!card) return;
+  if (!card || card.status === "running") return;
   collectSettings();
   const apiKey = getApiKey();
   if (!card.productRef?.url) {
@@ -4461,6 +4596,8 @@ async function generateCommercePromo() {
   }
 
   const prompt = commercePrompt(card);
+  const provider = settings.provider;
+  const resultPath = settings.customResultPath;
   const refs = commerceReferencePayload(card);
   card.status = "running";
   card.progress = 8;
@@ -4469,7 +4606,7 @@ async function generateCommercePromo() {
   save();
   try {
     let result;
-    if (settings.provider === "custom") {
+    if (provider === "custom") {
       let bodyTemplate = {};
       try { bodyTemplate = JSON.parse(settings.customBody || "{}"); } catch { throw new Error("自定义 Body Template 不是合法 JSON。"); }
       const data = await postJson("/api/custom", {
@@ -4484,26 +4621,34 @@ async function generateCommercePromo() {
         imageRefs: refs.imageRefs,
         imageRoles: refs.imageRoles
       });
-      const url = pathGet(data.response, settings.customResultPath);
+      if (originLibrary !== canvasLibrary) return;
+      const url = pathGet(data.response, resultPath);
       if (!url) throw new Error("自定义 API 没有按结果字段路径返回资产 URL。");
       result = { url, mime: "image/png" };
     } else {
       const imageResponse = await requestCommerceImage(agnesImageRequest(card, apiKey, prompt, refs.imageRefs, refs.imageRoles));
+      if (originLibrary !== canvasLibrary) return;
       result = imageResultUrl(imageResponse.data);
       if (!result) throw new Error("图片 API 未返回可用的图片 URL。");
       createCommerceResultCard(card, result.url, imageResponse.prompt, result.mime, originCanvasId);
     }
-    if (settings.provider === "custom") createCommerceResultCard(card, result.url, prompt, result.mime, originCanvasId);
+    if (provider === "custom") createCommerceResultCard(card, result.url, prompt, result.mime, originCanvasId);
     updateCard(card.id, { status: "done", progress: 100, error: "" }, originCanvasId);
   } catch (error) {
+    if (originLibrary !== canvasLibrary) return;
     updateCard(card.id, { status: "error", progress: 0, error: error.message || "电商宣传图生成失败。" }, originCanvasId);
   }
 }
 
 async function generateSelected() {
   const originCanvasId = canvasLibrary.activeCanvasId;
+  const originLibrary = canvasLibrary;
   const card = selectedCard();
   if (!card || !["image", "video"].includes(card.type)) return;
+  const lockKey = JSON.stringify(["node", originCanvasId, card.id]);
+  if (generationLocks.has(lockKey)) return;
+  generationLocks.add(lockKey);
+  try {
   collectSettings();
   const apiKey = getApiKey();
   const prompt = combinedPrompt(card);
@@ -4512,15 +4657,16 @@ async function generateSelected() {
     updateSelected({ status: "error", error: "请先在 API 设置中填写 Agnes API Key。" });
     return;
   }
-  if (!prompt) {
+  if (!prompt && !card.task) {
     updateSelected({ status: "error", error: "请先填写提示词，或连接一个文本/脚本节点作为输入。" });
     return;
   }
-  if (card.type === "video" && card.task && isRateLimitError({ message: card.error || "" })) {
+  if (card.type === "video" && (card.task?.video_id || card.task?.task_id)) {
     updateSelected({ status: "running", progress: Math.max(12, Number(card.progress || 12)), error: "继续查询已有视频任务，不会重复提交生成。" });
     try {
       await pollVideo(card.id, apiKey, originCanvasId);
     } catch (error) {
+      if (originLibrary !== canvasLibrary) return;
       updateCard(card.id, { status: "error", progress: 0, error: error.message }, originCanvasId);
     }
     return;
@@ -4531,23 +4677,33 @@ async function generateSelected() {
     else if (card.type === "image") await generateAgnesImage(card, apiKey, prompt, originCanvasId);
     else await generateAgnesVideo(card, apiKey, prompt, originCanvasId);
   } catch (error) {
+    if (originLibrary !== canvasLibrary) return;
     updateCard(card.id, { status: "error", progress: 0, error: error.message }, originCanvasId);
+  }
+  } finally {
+    generationLocks.delete(lockKey);
+    if (canvasLibrary.activeCanvasId === originCanvasId) renderInspector();
   }
 }
 
 async function generateCustom(card, apiKey, prompt, originCanvasId) {
+  const originLibrary = canvasLibrary;
+  const resultPath = settings.customResultPath;
   let bodyTemplate = {};
   try { bodyTemplate = JSON.parse(settings.customBody || "{}"); } catch { throw new Error("自定义 Body Template 不是合法 JSON。"); }
   const refs = cardRefs(card);
   const data = await postJson("/api/custom", { apiKey, endpoint: settings.customEndpoint, method: settings.customMethod, bodyTemplate, prompt, model: card.model, size: card.size, imageUrl: refs[0] || "", imageRefs: refs, imageRoles: refs.map(() => "reference") });
-  const result = pathGet(data.response, settings.customResultPath);
+  if (originLibrary !== canvasLibrary) return;
+  const result = pathGet(data.response, resultPath);
   if (!result) throw new Error("自定义 API 没有按结果字段路径返回资产 URL。");
   const mime = card.type === "video" ? "video/mp4" : "image/png";
   duplicateResultCard(card, card.type, result, mime, originCanvasId, { status: "done", progress: 100, resultUrl: result, mime });
 }
 
 async function generateAgnesImage(card, apiKey, prompt, originCanvasId) {
+  const originLibrary = canvasLibrary;
   const data = await postJson("/api/agnes/image", agnesImageRequest(card, apiKey, prompt, cardRefs(card)));
+  if (originLibrary !== canvasLibrary) return;
   const item = data.response?.data?.[0] || {};
   let resultUrl = item.url || "";
   if (!resultUrl && item.b64_json) resultUrl = `data:image/png;base64,${item.b64_json}`;
@@ -4556,35 +4712,60 @@ async function generateAgnesImage(card, apiKey, prompt, originCanvasId) {
 }
 
 async function generateAgnesVideo(card, apiKey, prompt, originCanvasId) {
+  const originLibrary = canvasLibrary;
   const { width, height } = parseSize(card.size);
   const numFrames = normalizeVideoFrameCount(card.num_frames, durationToFrames(card.duration, card.frame_rate));
   if (card.num_frames !== numFrames) updateCard(card.id, { num_frames: numFrames }, originCanvasId);
-  const created = await requestAgnesVideo({ apiKey, model: card.model || settings.videoModel, prompt, imageRefs: cardRefs(card), width, height, num_frames: normalizeVideoFrameCount(numFrames), frame_rate: card.frame_rate || 24, negative_prompt: card.negative_prompt, generate_audio: card.generate_audio }, {
-    onQueueWait: ({ remainingSeconds, attempt, maxRetries }) => updateCard(card.id, {
+  const context = { agnesRegion: settings.agnesRegion === "china" ? "china" : "global", model: card.model || settings.videoModel };
+  const created = await requestAgnesVideo({ apiKey, ...context, prompt, imageRefs: cardRefs(card), width, height, num_frames: normalizeVideoFrameCount(numFrames), frame_rate: card.frame_rate || 24, negative_prompt: card.negative_prompt, generate_audio: card.generate_audio }, {
+    isCancelled: () => originLibrary !== canvasLibrary,
+    onQueueWait: ({ remainingSeconds, attempt, maxRetries }) => originLibrary === canvasLibrary && updateCard(card.id, {
       status: "running",
       progress: 8,
       error: videoQueueFullMessage(remainingSeconds, attempt, maxRetries)
     }, originCanvasId)
   });
+  if (originLibrary !== canvasLibrary) return;
   const response = created.response || {};
-  const task = { video_id: response.video_id, task_id: response.task_id || response.id };
+  const directUrl = response.url || response.video_url || response.result?.url;
+  if (directUrl) {
+    duplicateResultCard(card, "video", directUrl, "video/mp4", originCanvasId, { status: "done", progress: 100, resultUrl: directUrl, mime: "video/mp4", error: "", task: null });
+    return;
+  }
+  const task = { ...context, video_id: response.video_id, task_id: response.task_id || response.id };
+  if (!task.video_id && !task.task_id) throw new Error("Agnes 视频 API 未返回任务 ID 或视频地址。");
   updateCard(card.id, { status: response.status || "queued", progress: response.progress || 12, task }, originCanvasId);
   await pollVideo(card.id, apiKey, originCanvasId, task);
 }
 
 async function pollVideo(cardId, apiKey, originCanvasId = canvasLibrary.activeCanvasId, initialTask = null) {
   const maxAttempts = 120;
+  const task = cloneData(initialTask || findCanvasCard(originCanvasId, cardId)?.task || {});
+  if (!task.video_id && !task.task_id) return;
+  task.agnesRegion = task.agnesRegion || (settings.agnesRegion === "china" ? "china" : "global");
+  task.model = task.model || findCanvasCard(originCanvasId, cardId)?.model || settings.videoModel;
+  const originLibrary = canvasLibrary;
+  let pendingTask = !findCanvasCard(originCanvasId, cardId)?.task && Boolean(initialTask);
+  const taskKey = JSON.stringify([task.video_id || "", task.task_id || ""]);
+  const stillCurrent = () => {
+    const current = findCanvasCard(originCanvasId, cardId);
+    if (!current || originLibrary !== canvasLibrary) return false;
+    if (!current.task) return pendingTask;
+    pendingTask = false;
+    return JSON.stringify([current.task.video_id || "", current.task.task_id || ""]) === taskKey;
+  };
   let delay = normalizePollInterval(settings.pollInterval);
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const card = findCanvasCard(originCanvasId, cardId);
-    const task = card?.task || initialTask;
-    if (!card || (!task?.video_id && !task?.task_id)) return;
+    if (!card || !stillCurrent()) return;
     await sleep(delay);
+    if (!stillCurrent()) return;
 
     let data;
     try {
-      data = await postJson("/api/agnes/video-result", { apiKey, model: card.model || settings.videoModel, video_id: task.video_id, task_id: task.task_id }, { flushLocalState: false });
+      data = await postJson("/api/agnes/video-result", { apiKey, agnesRegion: task.agnesRegion, model: task.model || card.model || settings.videoModel, video_id: task.video_id, task_id: task.task_id }, { flushLocalState: false });
     } catch (error) {
+      if (!stillCurrent()) return;
       if (isRateLimitError(error)) {
         delay = Math.min(MAX_VIDEO_POLL_INTERVAL, Math.max(Math.round(delay * 1.8), 15000));
         updateCard(cardId, {
@@ -4596,6 +4777,7 @@ async function pollVideo(cardId, apiKey, originCanvasId = canvasLibrary.activeCa
       }
       throw error;
     }
+    if (!stillCurrent()) return;
 
     delay = normalizePollInterval(settings.pollInterval);
     const result = data.response || {};
@@ -4604,10 +4786,13 @@ async function pollVideo(cardId, apiKey, originCanvasId = canvasLibrary.activeCa
     updateCard(cardId, { status: status === "completed" ? "running" : status, progress, error: "" }, originCanvasId);
     if (status === "completed" && result.url) {
       const current = findCanvasCard(originCanvasId, cardId);
-      duplicateResultCard(current, "video", result.url, "video/mp4", originCanvasId, { status: "done", progress: 100, resultUrl: result.url, mime: "video/mp4", error: "" });
+      duplicateResultCard(current, "video", result.url, "video/mp4", originCanvasId, { status: "done", progress: 100, resultUrl: result.url, mime: "video/mp4", error: "", task: null });
       return;
     }
-    if (status === "failed") throw new Error(result.error ? JSON.stringify(result.error) : "Agnes 视频生成失败。");
+    if (status === "failed") {
+      updateCard(cardId, { task: null }, originCanvasId);
+      throw new Error(result.error ? JSON.stringify(result.error) : "Agnes 视频生成失败。");
+    }
   }
   throw new Error("视频生成轮询超时。可稍后重新点击生成或查看 Agnes 控制台。");
 }

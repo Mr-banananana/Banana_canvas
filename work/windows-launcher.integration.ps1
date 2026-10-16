@@ -52,9 +52,13 @@ try {
   $secondOutput = Get-Content -LiteralPath (Join-Path $testRoot 'second.log') -Raw
   if ($secondOutput -notmatch '复用端口') { throw 'Second launcher did not report instance reuse.' }
   Write-Host 'PASS repeated launch reuses healthy instance'
-  $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-  & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $bundle 'stop.ps1')
-  if ($LASTEXITCODE -ne 0) { throw 'Stop script failed.' }
+  $stopArguments = '/d /s /c ""' + (Join-Path $bundle 'stop.bat') + '" --no-pause"'
+  $stopped = Start-Process -FilePath $env:ComSpec -ArgumentList $stopArguments -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput (Join-Path $testRoot 'stop.log') -RedirectStandardError (Join-Path $testRoot 'stop-error.log')
+  if ($stopped.ExitCode -ne 0) { throw 'Stop BAT failed with minimal PATH.' }
+  $stillHealthy = $false
+  try { $null = Invoke-RestMethod -Uri "http://127.0.0.1:$servicePort/healthz" -TimeoutSec 1; $stillHealthy = $true } catch {}
+  if ($stillHealthy) { throw 'Service remains active after stopping.' }
+  if (Test-Path -LiteralPath (Join-Path $bundle '.banana-canvas.runtime.json')) { throw 'Runtime state remains after stopping.' }
   Write-Host 'PASS stop script stops owned launcher and server'
 } finally {
   if ($listener) { $listener.Stop() }

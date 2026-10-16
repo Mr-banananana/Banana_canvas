@@ -1,11 +1,10 @@
 @echo off
 setlocal
-cd /d "%~dp0"
-if not exist "%~dp0.banana-canvas.runtime.json" (
-  echo [INFO] 没有由启动脚本管理的 Banana Canvas 实例。
-  pause
-  exit /b 0
-)
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0stop.ps1"
-if errorlevel 1 echo [ERROR] 停止失败；请在 Banana Canvas 启动窗口按 Ctrl+C。
-pause
+pushd "%~dp0" >nul 2>&1
+if errorlevel 1 exit /b 1
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0stop.ps1"
+set "BANANA_EXIT=%ERRORLEVEL%"
+popd
+if not "%BANANA_EXIT%"=="0" echo [ERROR] Stop failed. Press Ctrl+C in the startup window.
+if /i not "%~1"=="--no-pause" pause
+exit /b %BANANA_EXIT%

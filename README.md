@@ -85,6 +85,7 @@ Windows 用户不需要安装 npm，不需要 `npm install`，也不需要命令
 - 本地服务只监听本机；Docker 和 Render 部署使用单独的监听配置
 - 浏览器无法自动打开时，启动器会输出可手动访问的地址
 - PowerShell 用户也可以运行 `start.ps1`
+- 视频查询中断或页面刷新后，可点击“继续查询视频任务”恢复已有任务；任务会保留创建时的站点和模型，不重复提交生成
 
 项目没有第三方 npm 依赖。Windows 便携版含 `.runtime/`；源码版下载失败时会尝试备用源。Windows 诊断日志位于 `%LOCALAPPDATA%\BananaCanvas\logs`（PowerShell 启动路径）；只读项目的运行时缓存位于 `%LOCALAPPDATA%\BananaCanvas\runtime`。
 
@@ -149,6 +150,7 @@ Windows 用户不需要安装 npm，不需要 `npm install`，也不需要命令
 - Agnes 视频异步任务轮询和错误退避。
 - Agnes 国际站/中国站线路选择；认证失败时显示站点与密钥检查提示。
 - 画布 JSON 导入/导出、历史记录、撤销/重做和本地快照。
+- JSON 备份包含工作台本地图片/视频数据，可迁移到其他电脑；未找到的本地资产会在导出时提示
 - 节点搜索、分组管理、依赖关系感知自动布局。
 - 自定义 API 高级配置。
 - 电商宣传图和产品宣传视频工作台。

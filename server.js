@@ -287,7 +287,9 @@ async function fetchJson(url, options, timeoutMs = 360000, retryOptions = {}) {
   const networkRetries = Math.max(0, Number(retryOptions.networkRetries || 0));
   const target = new URL(url);
   const hasProxy = Boolean(proxyFor(target));
-  const directFallback = retryOptions.directFallback !== false && hasProxy;
+  const readOnly = ["GET", "HEAD", "OPTIONS"].includes(String(options?.method || "GET").toUpperCase());
+  // A lost response does not prove a create request was rejected. Never replay it by default.
+  const directFallback = hasProxy && (retryOptions.directFallback === true || (readOnly && retryOptions.directFallback !== false));
   const routes = [false, ...(directFallback ? [true] : []), ...Array(networkRetries).fill(false)];
   let lastCause = null;
   for (let routeIndex = 0; routeIndex < routes.length; routeIndex += 1) {
@@ -305,6 +307,7 @@ async function fetchJson(url, options, timeoutMs = 360000, retryOptions = {}) {
         if (delayMs) await new Promise(resolve => setTimeout(resolve, delayMs));
         continue;
       }
+      break;
     }
   }
   if (!response) {
@@ -317,6 +320,7 @@ async function fetchJson(url, options, timeoutMs = 360000, retryOptions = {}) {
     error.networkCode = isTransientNetworkError(lastCause) ? code : "";
     error.retryable = isTransientNetworkError(lastCause);
     error.networkAttempts = attempts;
+    error.submissionUnknown = !readOnly;
     throw error;
   }
   const contentType = String(response.headers["content-type"] || "");
@@ -660,7 +664,8 @@ async function route(req, res) {
       code: error.networkCode || undefined,
       retryable: error.retryable || undefined,
       upstreamCode: error.upstreamCode || undefined,
-      retryAfterSeconds: error.retryAfterSeconds || undefined
+      retryAfterSeconds: error.retryAfterSeconds || undefined,
+      submissionUnknown: error.submissionUnknown || undefined
     });
   }
 }

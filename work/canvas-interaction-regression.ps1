@@ -71,6 +71,7 @@ $createNewCanvasBlock = [regex]::Match($app, 'function createNewCanvas\(\) \{[\s
 $deleteActiveCanvasBlock = [regex]::Match($app, 'function deleteActiveCanvas\(\) \{[\s\S]*?\n\}').Value
 $exportJsonBlock = [regex]::Match($app, 'function exportJson\(\) \{[\s\S]*?\n\}').Value
 $importJsonBlock = [regex]::Match($app, 'function importJson\(event\) \{[\s\S]*?\n\}').Value
+$validateCanvasImportBlock = [regex]::Match($app, 'function validateCanvasImport\(data\) \{[\s\S]*?\n\}').Value
 $setWorkspaceModeBlock = [regex]::Match($app, 'function setWorkspaceMode\(mode\) \{[\s\S]*?\n\}').Value
 $postJsonBlock = [regex]::Match($app, 'async function postJson\([^)]*\) \{[\s\S]*?\n\}').Value
 $flushLocalSaveBlock = [regex]::Match($app, 'function flushLocalSave\(\) \{[\s\S]*?\n\}').Value
@@ -489,6 +490,8 @@ function captureCurrentCanvas() {
 }
 function canvasSnapshot() { return { cards: JSON.parse(JSON.stringify(state.cards)) }; }
 function normalizeCanvasGroup(group) { return group; }
+function workspaceStorageSnapshot(workspace = {}) { return workspace; }
+function persistWorkspaceAssetsForCanvas() {}
 const committed = [];
 function commitLocalState(payload) { committed.push(JSON.parse(JSON.stringify(payload))); }
 let queuedMarker = null;
@@ -998,6 +1001,7 @@ assert(debounceCancelCalls >= 2 && retries >= 2);
 $importSecondBoundaryFixturePass = $false
 if ($importJsonBlock -and $discardQueuedForReplacementBlock) {
   $importSecondBoundaryProbe = @"
+$validateCanvasImportBlock
 function cloneData(value) { return JSON.parse(JSON.stringify(value)); }
 const CANVAS_LIBRARY_SCHEMA = 2;
 let state = {
@@ -1131,7 +1135,7 @@ $checks = @(
   @{
     Name = 'canvas engine and app scripts are cache busted together'
     Pass = $html -match 'canvas-engine\.js\?v=canvas-interactions-5' -and
-      $html -match 'app\.js\?v=canvas-interactions-17'
+      $html -match 'app\.js\?v=canvas-interactions-18'
   },
   @{
     Name = 'wheel modifiers route to horizontal pan vertical pan and zoom'
@@ -1883,7 +1887,7 @@ $checks = @(
     Name = 'product video state is persisted and normalized'
     Pass = $app -match 'productVideoWorkspace:' -and
       $app -match 'normalizeProductVideoWorkspace' -and
-      $app -match 'productVideoWorkspace: workspaceStorageSnapshot\(state\.productVideoWorkspace, canvasLibrary\.activeCanvasId, "product-video"\)' -and
+      $app -match 'productVideoWorkspace: workspaceStorageSnapshot\(canvas\.productVideoWorkspace, canvas\.id, "product-video"\)' -and
       $app -match 'data.productVideoWorkspace'
   },
   @{
@@ -2026,7 +2030,7 @@ $checks = @(
   },
   @{
     Name = 'video thumbnails suppress native media hover controls'
-    Pass = $html -match 'app\.js\?v=canvas-interactions-17' -and
+    Pass = $html -match 'app\.js\?v=canvas-interactions-18' -and
       $styles -match '\.commerce-asset-media\s*>\s*video\s*\{[\s\S]*?pointer-events:\s*none' -and
       $app -match 'disablepictureinpicture' -and
       $app -match 'disableremoteplayback'
@@ -2171,7 +2175,7 @@ $checks = @(
   },
   @{
     Name = 'prompt fixes are cache-busted in the served page'
-    Pass = $html -match 'app\.js\?v=canvas-interactions-17' -and $html -match 'styles\.css\?v=canvas-controls-15'
+    Pass = $html -match 'app\.js\?v=canvas-interactions-18' -and $html -match 'styles\.css\?v=canvas-controls-15'
   },
   @{
     Name = 'server exposes a deployment health endpoint'
