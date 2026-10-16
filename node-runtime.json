@@ -1,0 +1,9 @@
+{
+  "version": "v22.23.3",
+  "minimumWindowsBuild": 10240,
+  "windows": {
+    "x64": { "sha256": "2b0ff57b049cda1bbcea2240eec20467018713c1efe1f7360c2681859b90ed71" },
+    "arm64": { "sha256": "33dad22e4cef5ee8f9fbb1b0d037fdacd0e56d12a4580f0d63f68b894deab535" },
+    "x86": { "sha256": "1e07ac00e61b41b7ecf242de8e38883d237d5ad3fdcad7c16f2dd3a88670e2b6" }
+  }
+}

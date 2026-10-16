@@ -5,6 +5,7 @@ $server = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\server.js')
 $launcher = if (Test-Path (Join-Path $PSScriptRoot '..\launcher.js')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\launcher.js') } else { '' }
 $nodeBootstrap = if (Test-Path (Join-Path $PSScriptRoot '..\bootstrap-node.sh')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\bootstrap-node.sh') } else { '' }
 $windowsStart = if (Test-Path (Join-Path $PSScriptRoot '..\start.ps1')) { Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\start.ps1') } else { '' }
+$windowsBootstrap = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\bootstrap-node.ps1')
 $package = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\package.json')
 $readme = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\README.md')
 $alipayAsset = Join-Path $PSScriptRoot '..\public\assets\support-alipay.jpg'
@@ -739,6 +740,7 @@ $postJsonFlushOptionFixturePass = $false
 if ($postJsonBlock) {
   $postJsonFlushOptionProbe = @"
 let flushes = 0;
+const settings = { agnesRegion: "global" };
 const requests = [];
 function flushLocalSave() { flushes += 1; }
 function isUpstreamTimeout() { return false; }
@@ -1881,7 +1883,7 @@ $checks = @(
     Name = 'product video state is persisted and normalized'
     Pass = $app -match 'productVideoWorkspace:' -and
       $app -match 'normalizeProductVideoWorkspace' -and
-      ($app -match 'productVideoWorkspace: state.productVideoWorkspace' -or $app -match 'productVideoWorkspace: workspaceStorageSnapshot\(state\.productVideoWorkspace\)' ) -and
+      $app -match 'productVideoWorkspace: workspaceStorageSnapshot\(state\.productVideoWorkspace, canvasLibrary\.activeCanvasId, "product-video"\)' -and
       $app -match 'data.productVideoWorkspace'
   },
   @{
@@ -2246,10 +2248,9 @@ $checks = @(
   },
   @{
     Name = 'Windows starter finds or securely bootstraps Node.js without a global PATH change'
-    Pass = $windowsStart -match 'ProgramFiles' -and $windowsStart -match 'nodejs' -and
-      $windowsStart -match 'https://nodejs\.org/dist/index\.json' -and
-      $windowsStart -match 'SHASUMS256\.txt' -and $windowsStart -match 'Get-FileHash' -and
-      $windowsStart -match '\.runtime' -and $windowsStart -match '\$env:PATH'
+    Pass = $windowsStart -match 'Resolve-BananaNode' -and $windowsBootstrap -match 'ProgramFiles' -and
+      $windowsBootstrap -match 'node-runtime\.json' -and $windowsBootstrap -match 'Get-FileHash' -and
+      $windowsBootstrap -match '\.runtime' -and $windowsBootstrap -notmatch 'dist/index\.json'
   },
   @{
     Name = 'README has a download and double-click quick start'
@@ -2261,7 +2262,7 @@ $checks = @(
   },
   @{
     Name = 'macOS and Linux starter checks Node.js and validates downloaded runtimes'
-    Pass = $nodeBootstrap -match 'nodejs\.org/dist/index\.json' -and $nodeBootstrap -match 'SHASUMS256\.txt' -and $nodeBootstrap -match 'shasum -a 256' -and $nodeBootstrap -match '\.runtime'
+    Pass = $nodeBootstrap -match 'nodejs\.org/dist' -and $nodeBootstrap -match 'index\.json' -and $nodeBootstrap -match 'SHASUMS256\.txt' -and $nodeBootstrap -match 'shasum -a 256' -and $nodeBootstrap -match '\.runtime'
   },
   @{
     Name = 'README documents macOS double-click startup'

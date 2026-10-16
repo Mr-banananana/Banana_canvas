@@ -36,7 +36,7 @@ function probePort(port) {
   return new Promise(resolve => {
     const probe = net.createServer();
     probe.once("error", error => resolve({ available: false, error }));
-    probe.listen({ host: "0.0.0.0", port, exclusive: true }, () => {
+    probe.listen({ host: process.env.HOST || "127.0.0.1", port, exclusive: true }, () => {
       probe.close(error => resolve({ available: !error, error }));
     });
   });

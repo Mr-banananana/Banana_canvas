@@ -669,12 +669,12 @@ const server = http.createServer(route);
 
 server.on("error", error => {
   if (error.code === "EADDRINUSE") {
-    console.error(`[Banana Canvas] Port ${PORT} is already in use.`);
+    console.error(`[Banana Canvas] Port ${PORT} is already in use (EADDRINUSE).`);
     console.error("[Banana Canvas] Stop the existing service with stop.bat, then start again.");
     process.exitCode = 1;
     return;
   }
-  console.error("[Banana Canvas] Server failed to start:", error.message);
+  console.error("[Banana Canvas] Server failed to start:", error.code || "UNKNOWN", error.message);
   process.exitCode = 1;
 });
 

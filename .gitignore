@@ -1,5 +1,7 @@
 node_modules/
 .runtime/
+.release-cache/
+dist/
 .env
 .env.*
 !.env.example

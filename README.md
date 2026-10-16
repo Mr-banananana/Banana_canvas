@@ -4,6 +4,10 @@ Banana Canvas 是一个免费开源、本地优先的 AI 无限画布。用户�
 
 > 如果这个项目对你有帮助，欢迎在右上角点个Star，支持项目持续维护。
 
+**Windows 推荐下载：[x64 便携版（大多数电脑）](https://github.com/Mr-banananana/Banana_canvas/releases/latest/download/Banana-Canvas-windows-x64.zip)**。已内置 Node.js，完整解压后双击 `start.bat`，无需安装开发环境或首次下载运行时。
+
+其他架构：[ARM64](https://github.com/Mr-banananana/Banana_canvas/releases/latest/download/Banana-Canvas-windows-arm64.zip) · [32 位 x86](https://github.com/Mr-banananana/Banana_canvas/releases/latest/download/Banana-Canvas-windows-x86.zip) · [版本公告与所有下载](https://github.com/Mr-banananana/Banana_canvas/releases/latest)。Windows 支持 10/11；Windows 7/8 不在支持范围内。AI 生成仍需要联网和自己的 API Key。
+
 ## 核心特点
 
 - 免费开源，本地运行，不需要云端账号。
@@ -65,9 +69,9 @@ http://localhost:5337
 
 Windows 用户不需要安装 npm，不需要 `npm install`，也不需要命令行：
 
-1. 在 GitHub 点击 `Code > Download ZIP` 并解压。
-2. 双击项目根目录的 `start.bat`。电脑已有 Node.js 时会自动查找 PATH 和常见安装位置；没有时会依次从 Node.js 官方站点、npmmirror 或清华镜像下载 Node.js 22，并校验 SHA-256 后解压到项目的 `.runtime/` 目录。
-3. 首次自动下载需要网络连接和项目目录写权限；不会修改系统 PATH，也不需要管理员权限。准备完成后，后续启动可离线使用。
+1. 从 [Release](https://github.com/Mr-banananana/Banana_canvas/releases/latest) 下载 `Banana-Canvas-windows-x64.zip`（ARM 电脑选 arm64，32 位系统选 x86），然后完整解压。不要直接在压缩包内启动。
+2. 双击项目根目录的 `start.bat`。便携版优先直接使用内置 Node.js，本地界面无需联网即可启动，也无需 PowerShell 执行下载脚本。
+3. `Code > Download ZIP` 和 Release 的 `Source code` 是源码包，不包含运行时。源码包会查找已有 Node.js，缺失时才下载固定版本；下载包必须匹配项目内的官方 SHA-256 值。项目目录不可写时使用当前用户的缓存目录，无需管理员权限。
 4. 启动器会自动选择可用端口、等待健康检查通过，再打开浏览器。默认地址是 `http://localhost:5337/`；如果端口不可用，会自动尝试后续端口并显示实际地址。
 
 启动脚本会使用一次性地址参数，并由本地服务禁止静态资源缓存，避免更新后继续加载旧版页面或脚本；不会清除画布、临时资产或用户填写的 API Key。
@@ -82,7 +86,9 @@ Windows 用户不需要安装 npm，不需要 `npm install`，也不需要命令
 - 浏览器无法自动打开时，启动器会输出可手动访问的地址
 - PowerShell 用户也可以运行 `start.ps1`
 
-项目没有第三方 npm 依赖。Node.js 运行时仅在未检测到系统 Node.js 时下载，并保存在项目本地 `.runtime/` 目录；官方站点不可用时会自动尝试备用镜像。
+项目没有第三方 npm 依赖。Windows 便携版含 `.runtime/`；源码版下载失败时会尝试备用源。Windows 诊断日志位于 `%LOCALAPPDATA%\BananaCanvas\logs`（PowerShell 启动路径）；只读项目的运行时缓存位于 `%LOCALAPPDATA%\BananaCanvas\runtime`。
+
+维护者可运行 `npm run package:windows` 重建三个架构的便携 ZIP；脚本校验官方运行时 SHA-256 和 PE 架构，并保留 Node.js 第三方许可证。发布时请同时上传 ZIP 和 `SHA256SUMS.txt`。
 
 ### macOS 用户
 
