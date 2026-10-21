@@ -24,8 +24,8 @@ tests.push(['structured non-queue errors and already-created tasks are never rep
  assert.equal(ctx.isVideoQueueFullError({status:503,upstreamCode:'video_queue_full',data:{details:{response:{video_id:'already-paid'}}}}),false);
 }]);
 tests.push(['persistent queue message retains site, model and upstream request ID',()=>{
- const ctx=context({settings:{agnesRegion:'global'}},app,['videoQueueFullMessage']);
- const message=ctx.videoQueueFullMessage(0,3,3,{upstreamMessage:'Video queue is full (request id: queue-proof-123)',upstreamCode:'video_queue_full'},{model:'agnes-video-2.5-flash',agnesRegion:'china'});
+ const ctx=context({Date,videoSubmissionWaits:new Map()},app,['videoQueuePhase','videoQueueTitle','formatVideoWait','videoQueueDiagnostic']);
+ const message=ctx.videoQueueDiagnostic({phase:'exhausted',requestId:'queue-proof-123',region:'china',updatedAt:Date.now(),attempt:3,elapsedMs:180000},'fixture');
  assert.match(message,/queue-proof-123/);assert.match(message,/agnes-video-2.5-flash/);assert.match(message,/api\.agnes-ai\.cn/);
 }]);
 function gateFixture(){let now=100000;const ctx=context({crypto,videoSubmissionGates:new Map(),Date:{now:()=>now},setTimeout,clearTimeout},server,['withVideoSubmissionSlot']);ctx.tick=ms=>now+=ms;return ctx;}
@@ -47,14 +47,14 @@ tests.push(['Bearer copied with the credential is normalized before authorizatio
  const ctx=context({},server,['requireApiKey']);assert.equal(ctx.requireApiKey({apiKey:' "Bearer fixture-key" '}),'fixture-key');
  assert.throws(()=>ctx.requireApiKey({apiKey:'bad\r\nheader'}));
 }]);
-function retryFixture(){let now=0;const ctx=context({Date:{now:()=>now},settings:{agnesRegion:'global'},videoSubmissionWaits:new Map(),sleep:async ms=>{now+=ms;},postJson:async()=>({response:{video_id:'accepted'}})},app,['isVideoQueueFullError','videoQueueRetryDelay','videoQueueFullMessage','cancelVideoQueueWait','requestAgnesVideo']);ctx.time=()=>now;return ctx;}
+function retryFixture(){let now=0;const ctx=context({Date:{now:()=>now},VIDEO_QUEUE_WAIT_BUDGET:900000,settings:{agnesRegion:'global'},videoSubmissionWaits:new Map(),sleep:async ms=>{now+=ms;},postJson:async()=>({response:{video_id:'accepted'}})},app,['isVideoQueueFullError','videoQueueRetryDelay','cancelVideoQueueWait','requestAgnesVideo']);ctx.time=()=>now;return ctx;}
 tests.push(['automatic retry never submits before the complete upstream cooldown',async()=>{
  const ctx=retryFixture();let calls=0;ctx.postJson=async()=>{if(++calls===1)throw Object.assign(new Error('queue'),{status:503,upstreamCode:'video_queue_full',retryAfterSeconds:240});assert(ctx.time()>=240000);return {response:{video_id:'accepted'}};};
  await ctx.requestAgnesVideo({model:'agnes-video-2.5-flash'});assert.equal(calls,2);
 }]);
 tests.push(['persistent saturation stops after bounded retries and preserves diagnostics',async()=>{
  const ctx=retryFixture();let calls=0;ctx.postJson=async()=>{calls++;throw Object.assign(new Error('queue'),{status:503,upstreamCode:'video_queue_full',requestId:'persist-proof'});};
- await assert.rejects(ctx.requestAgnesVideo({model:'agnes-video-2.5-flash'}),error=>/persist-proof/.test(error.message));assert.equal(calls,4);assert.equal(ctx.time(),420000);
+ await assert.rejects(ctx.requestAgnesVideo({model:'agnes-video-2.5-flash'}),error=>error.code==='VIDEO_QUEUE_WAIT_ENDED'&&error.requestId==='persist-proof');assert(calls>=10&&calls<=16);assert(ctx.time()>=825000&&ctx.time()<900000);
 }]);
 tests.push(['stop waiting cancels retries without cancelling an accepted task',async()=>{
  const ctx=retryFixture();let calls=0;ctx.postJson=async()=>{calls++;throw Object.assign(new Error('queue'),{status:503,upstreamCode:'video_queue_full'});};

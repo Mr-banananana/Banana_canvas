@@ -210,6 +210,7 @@ const settings = {
 
 const MIN_VIDEO_POLL_INTERVAL = 12000;
 const MAX_VIDEO_POLL_INTERVAL = 60000;
+const VIDEO_QUEUE_WAIT_BUDGET = 15 * 60 * 1000;
 
 function normalizePollInterval(value) {
   const interval = Number(value);
@@ -820,6 +821,7 @@ function normalizeCard(card) {
   card.status = card.status || "idle";
   if (card.status === "done") card.task = null;
   card.progress = Number(card.progress || 0);
+  card.videoQueue = normalizeVideoQueue(card.videoQueue);
   card.resultUrl = String(card.resultUrl || "");
   card.mime = String(card.mime || "");
   card.prompt = String(card.prompt || "");
@@ -1113,6 +1115,7 @@ function normalizeProductVideoWorkspace(workspace = {}) {
     duration: [4, 5, 6, 8].includes(Number(workspace.duration)) ? Number(workspace.duration) : 5,
     fps: [24, 30].includes(Number(workspace.fps)) ? Number(workspace.fps) : 24,
     generateAudio: workspace.generateAudio === true,
+    videoQueue: normalizeVideoQueue(workspace.videoQueue),
     status: validStatus.includes(workspace.status) ? workspace.status : task?.video_id || task?.task_id ? "error" : "idle",
     progress: Math.max(0, Math.min(100, Number(workspace.progress || 0))),
     error: String(workspace.error || ""),
@@ -2048,6 +2051,8 @@ function typeLabel(type) {
 }
 
 function statusLabel(card) {
+  if (card.type === "video" && card.videoQueue && !card.task) return videoQueueTitle(card.videoQueue, JSON.stringify(["node", canvasLibrary.activeCanvasId, card.id]));
+  if (card.type === "video" && card.status === "running" && !card.task) return "提交中";
   if (card.status === "running") return "生成中";
   if (card.status === "done") return "完成";
   if (card.status === "error") return "失败";
@@ -2056,6 +2061,7 @@ function statusLabel(card) {
 }
 
 function statusClass(card) {
+  if (card.type === "video" && card.videoQueue && !card.task) return "waiting";
   if (card.status === "running" || card.status === "queued") return "running";
   if (card.status === "done") return "done";
   if (card.status === "error") return "error";
@@ -2185,10 +2191,12 @@ function renderProductVideoWorkspace() {
   els.productVideoDuration.value = String(workspace.duration);
   els.productVideoFps.value = String(workspace.fps);
   els.productVideoAudio.value = String(workspace.generateAudio);
+  const queueVisible = renderVideoQueuePanel("productVideoQueuePanel", workspace.videoQueue, JSON.stringify(["product-video", canvasLibrary.activeCanvasId]), workspace.task);
   els.productVideoStatus.textContent = productVideoStatusText();
   els.productVideoStatus.className = `commerce-workspace-status ${workspace.status === "error" ? "error" : workspace.status === "running" ? "running" : workspace.results.length ? "success" : ""}`;
+  els.productVideoStatus.classList.toggle("hidden", queueVisible);
   els.productVideoGenerate.disabled = generationLocks.has(JSON.stringify(["product-video", canvasLibrary.activeCanvasId])) || (!workspace.productRef && !workspace.task);
-  els.productVideoGenerate.querySelector("span").textContent = workspace.task ? "继续查询视频任务" : "生成产品视频";
+  els.productVideoGenerate.querySelector("span").textContent = workspace.task ? "继续查询视频任务" : queueVisible ? generationLocks.has(JSON.stringify(["product-video", canvasLibrary.activeCanvasId])) ? "等待提交中" : "稍后重新尝试" : "生成产品视频";
   document.getElementById("cancelProductVideoWait").classList.toggle("hidden", !videoSubmissionWaits.get(JSON.stringify(["product-video", canvasLibrary.activeCanvasId]))?.waiting);
   document.querySelectorAll("[data-product-video-slot]").forEach(button => {
     button.classList.toggle("error", workspace.status === "error" && !workspace.productRef);
@@ -2341,8 +2349,9 @@ async function generateProductVideo() {
     return;
   }
   workspace.status = "running";
-  workspace.progress = 8;
-  workspace.error = "";
+  workspace.progress = 0;
+  workspace.videoQueue = null;
+  workspace.error = "正在提交产品视频请求，尚未取得任务 ID…";
   renderProductVideoWorkspace();
   save();
   const request = { ...productVideoRequest(apiKey), agnesRegion: settings.agnesRegion === "china" ? "china" : "global" };
@@ -2350,14 +2359,16 @@ async function generateProductVideo() {
   try {
     const created = await requestAgnesVideo(request, {
       waitKey: lockKey,
-      isCancelled: () => originLibrary !== canvasLibrary,
-      onQueueWait: ({ remainingSeconds, attempt, maxRetries, message }) => originLibrary === canvasLibrary && mutateCanvasById(originCanvasId, targetState => {
-        targetState.productVideoWorkspace.status = "running";
-        targetState.productVideoWorkspace.progress = 8;
-        targetState.productVideoWorkspace.error = message || videoQueueFullMessage(remainingSeconds, attempt, maxRetries);
+      isCancelled: () => originLibrary !== canvasLibrary || !canvasStateFor(originCanvasId),
+      onQueueWait: ({ queue, message }) => originLibrary === canvasLibrary && mutateCanvasById(originCanvasId, targetState => {
+        targetState.productVideoWorkspace.status = ["stopped", "exhausted"].includes(queue.phase) ? "idle" : "running";
+        targetState.productVideoWorkspace.progress = 0;
+        targetState.productVideoWorkspace.videoQueue = queue;
+        targetState.productVideoWorkspace.error = message;
       }, renderProductVideoWorkspace)
     });
     if (originLibrary !== canvasLibrary) return;
+    mutateCanvasById(originCanvasId, targetState => { targetState.productVideoWorkspace.videoQueue = null; targetState.productVideoWorkspace.error = ""; }, renderProductVideoWorkspace);
     const response = created.response || {};
     if (response.status === "failed") throw new Error(response.error?.message || (typeof response.error === "string" ? response.error : "Agnes 产品视频任务已失败。"));
     const directUrl = response.status === "completed" ? response.url || response.video_url || response.result?.url : "";
@@ -2375,7 +2386,8 @@ async function generateProductVideo() {
   } catch (error) {
     if (originLibrary !== canvasLibrary) return;
     mutateCanvasById(originCanvasId, targetState => {
-      targetState.productVideoWorkspace.status = "error";
+      targetState.productVideoWorkspace.status = ["VIDEO_WAIT_CANCELLED", "VIDEO_QUEUE_WAIT_ENDED"].includes(error.code) ? "idle" : "error";
+      if (!["VIDEO_WAIT_CANCELLED", "VIDEO_QUEUE_WAIT_ENDED"].includes(error.code)) targetState.productVideoWorkspace.videoQueue = null;
       targetState.productVideoWorkspace.error = error.message || "产品视频生成失败。";
     }, renderProductVideoWorkspace);
   }
@@ -2648,8 +2660,8 @@ function render() {
         </div>
         <div class="card-body">
           <div class="asset-preview">${cardPreview(card)}</div>
-          <div class="prompt-preview">${escapeHtml(card.error || card.prompt || "未填写提示词")}</div>
-          ${(card.status === "running" || card.status === "queued") ? `<div class="progress-line"><span style="width:${Number(card.progress || 8)}%"></span></div>` : ""}
+          <div class="prompt-preview">${escapeHtml(card.videoQueue && !card.task ? "视频尚未受理。提示词与参考图已保留，可在下方查看等待状态。" : card.error || card.prompt || "未填写提示词")}</div>
+          ${(card.status === "running" || card.status === "queued") && !(card.type === "video" && !card.task) ? `<div class="progress-line"><span style="width:${Number(card.progress || 8)}%"></span></div>` : ""}
         </div>
       </article>`;
   }).join("");
@@ -2868,12 +2880,14 @@ function renderInspector() {
     : `<div class="status-box">暂无参考图。请把图片或上传资产节点连到此节点作为参考。</div>`;
   els.referenceList.innerHTML = `${upstreamInfo}${manualRefs}`;
 
+  const queueVisible = renderVideoQueuePanel("videoQueuePanel", card.type === "video" ? card.videoQueue : null, JSON.stringify(["node", canvasLibrary.activeCanvasId, card.id]), card.task);
   const statusText = card.error || taskText(card);
   els.statusBox.textContent = statusText;
+  els.statusBox.classList.toggle("hidden", queueVisible);
   els.statusBox.classList.toggle("error", card.status === "error");
   const resultLink = safeResultLink(card.resultUrl);
   els.generateBtn.disabled = generationLocks.has(JSON.stringify(["node", canvasLibrary.activeCanvasId, card.id]));
-  els.generateBtn.querySelector("span").textContent = card.type === "video" && card.task ? "继续查询视频任务" : "生成资产";
+  els.generateBtn.querySelector("span").textContent = card.type === "video" && card.task ? "继续查询视频任务" : queueVisible ? generationLocks.has(JSON.stringify(["node", canvasLibrary.activeCanvasId, card.id])) ? "等待提交中" : "稍后重新尝试" : "生成资产";
   document.getElementById("cancelVideoWait").classList.toggle("hidden", card.type !== "video" || !videoSubmissionWaits.get(JSON.stringify(["node", canvasLibrary.activeCanvasId, card.id]))?.waiting);
   els.resultBox.innerHTML = resultLink ? `<a href="${escapeAttr(resultLink)}" target="_blank" rel="noreferrer">打开生成结果</a>` : card.resultUrl ? "结果已生成，无法作为网页链接直接打开。" : "";
   requestAnimationFrame(() => {
@@ -2885,6 +2899,7 @@ function renderInspector() {
 }
 
 function taskText(card) {
+  if (card.type === "video" && card.status === "running" && !card.task) return "正在提交视频请求，尚未取得任务 ID…";
   if (card.status === "queued") return "任务已创建，等待生成。";
   if (card.status === "running") return `生成中，进度 ${Number(card.progress || 0)}%。`;
   if (card.status === "done") return "生成完成，结果已写回画布。";
@@ -2941,6 +2956,7 @@ function setupSizePicker() {
 
 function bindInputs() {
   setupSizePicker();
+  setupVideoQueuePanels();
   document.getElementById("cancelVideoWait").addEventListener("click", () => {
     if (selectedCard()) cancelVideoQueueWait(JSON.stringify(["node", canvasLibrary.activeCanvasId, selectedCard().id]));
   });
@@ -4073,21 +4089,123 @@ function isVideoQueueFullError(error) {
   );
 }
 
-function videoQueueFullMessage(remainingSeconds, attempt, maxRetries, error = {}, body = {}) {
-  const site = (body.agnesRegion || settings.agnesRegion) === "china" ? "api.agnes-ai.cn" : "apihub.agnes-ai.com";
-  const requestId = error.requestId || String(error.upstreamMessage || "").match(/request id:\s*([\w-]{1,128})/i)?.[1] || "";
-  const context = `${body.model || "当前视频模型"} · ${site}${requestId ? ` · 请求编号：${requestId}` : ""}`;
-  const local = String(error.upstreamCode || "").startsWith("local_");
-  if (remainingSeconds > 0) {
-    return `${local ? "视频提交处于冷却/协调等待" : "Agnes 上游视频队列已满"}，${remainingSeconds} 秒后再次尝试（${attempt}/${maxRetries}）。本次请求尚未取得任务 ID，请不要重复点击。可停止本次等待。\n${context}`;
+function videoQueuePhase(queue, key) {
+  if (["waiting", "submitting"].includes(queue?.phase) && !videoSubmissionWaits.has(key)) return "interrupted";
+  return queue?.phase || "interrupted";
+}
+
+function normalizeVideoQueue(queue) {
+  if (!queue || typeof queue !== "object") return null;
+  const number = value => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
+  return {
+    phase: ["waiting", "submitting", "stopped", "exhausted"].includes(queue.phase) ? queue.phase : "interrupted",
+    startedAt: number(queue.startedAt), updatedAt: number(queue.updatedAt), retryAt: number(queue.retryAt), elapsedMs: number(queue.elapsedMs), retryAfterSeconds: number(queue.retryAfterSeconds),
+    attempt: Math.min(16, Math.max(1, number(queue.attempt))), region: queue.region === "china" ? "china" : "global", local: queue.local === true, rejected: queue.rejected === true,
+    requestId: String(queue.requestId || "").match(/^[\w-]{1,128}$/)?.[0] || ""
+  };
+}
+
+function videoQueueTitle(queue, key) {
+  const phase = videoQueuePhase(queue, key);
+  return ({ waiting: queue.local ? "等待提交间隔" : "服务繁忙，等待提交", submitting: Number(queue.attempt) > 1 ? "正在重新提交" : "正在提交请求", stopped: "已停止等待", exhausted: "本次等待已结束", interrupted: "等待已中断" })[phase] || "等待已结束";
+}
+
+function formatVideoWait(ms) {
+  const seconds = Number.isFinite(Number(ms)) ? Math.max(0, Math.floor(Number(ms) / 1000)) : 0;
+  return `${Math.floor(seconds / 60)} 分 ${String(seconds % 60).padStart(2, "0")} 秒`;
+}
+
+function videoQueueDiagnostic(queue, key) {
+  // Whitelist fields: never copy request bodies, prompts, media URLs or credentials.
+  const safeId = String(queue.requestId || "").match(/^[\w-]{1,128}$/)?.[0] || "未提供";
+  const timestamp = Number(queue.updatedAt);
+  return [
+    "Banana Canvas v1.0.11 · 视频提交诊断",
+    `时间：${Number.isFinite(timestamp) && timestamp > 0 && timestamp <= 8640000000000000 ? new Date(timestamp).toISOString() : "未知"}`,
+    `站点：${queue.region === "china" ? "中国站 api.agnes-ai.cn" : "国际站 apihub.agnes-ai.com"}`,
+    "模型：agnes-video-2.5-flash",
+    `状态：${videoQueueTitle(queue, key)}`,
+    `错误码：${queue.rejected ? queue.local ? "local_video_cooldown_or_busy" : "video_queue_full" : "尚未收到错误响应"}`,
+    `请求编号：${safeId}`,
+    `提交尝试次数：${Math.min(16, Math.max(1, Number(queue.attempt) || 1))}`,
+    `记录的等待时长：${formatVideoWait(queue.elapsedMs)}`,
+    "任务 ID：尚未取得；本地倒计时不代表已经进入上游队列。",
+    "请协助核查 Flash 通道容量、账号配额及在途任务计数。",
+    "此信息不包含 API Key、提示词和参考图片。"
+  ].join("\n");
+}
+
+function renderVideoQueuePanel(id, queue, key, task) {
+  const panel = document.getElementById(id);
+  const visible = Boolean(queue && !task);
+  panel.classList.toggle("hidden", !visible);
+  if (!visible) { panel._queueIdentity = ""; return false; }
+  const phase = videoQueuePhase(queue, key);
+  const active = ["waiting", "submitting"].includes(phase);
+  const identity = `${key}:${queue.startedAt}`;
+  if (panel._queueIdentity !== identity) {
+    panel._queueIdentity = identity;
+    panel.querySelector("details").open = false;
+    panel.querySelector("[data-queue-feedback]").textContent = "";
   }
-  return `视频提交仍被上游队列或冷却限制拒绝，已停止自动重试。请在对应 Agnes 控制台检查已有任务和通道状态；持续失败时将下方请求编号交给服务商排查。程序不会自动切换模型或站点。\n${context}${error.retryAfterSeconds ? `\n上游/本地建议至少等待 ${error.retryAfterSeconds} 秒。` : ""}`;
+  panel.querySelector("[data-queue-title]").textContent = videoQueueTitle(queue, key);
+  panel.querySelector("[data-queue-description]").textContent = phase === "interrupted"
+    ? queue.phase === "submitting" ? "页面在提交期间中断，上次提交结果未确认。已停止自动重试，请先向 Agnes 核查是否已有任务，避免重复生成。" : "页面刷新或数据恢复后已停止自动重试。尚未取得任务 ID，可稍后手动重新尝试。"
+    : phase === "stopped" ? "已停止后续提交。提示词和参考图已保留。"
+    : phase === "exhausted" ? `仍未取得任务 ID，已停止自动提交。${queue.retryAfterSeconds ? `服务端要求至少间隔 ${queue.retryAfterSeconds} 秒；本次剩余等待时间不足。` : ""}提示词和参考图已保留，可稍后重新尝试。`
+    : phase === "submitting" ? "正在向 Agnes 提交请求，请等待响应。关闭页面无法撤回已经发送的请求。"
+    : queue.local ? "同一密钥的其他请求正在提交，或提交间隔尚未结束。当前请求尚未取得任务 ID。"
+    : "Agnes 暂未受理本次视频请求。当前没有任务 ID，尚未开始生成。";
+  const elapsed = active ? Date.now() - Number(queue.startedAt || Date.now()) : Number(queue.elapsedMs || 0);
+  panel.querySelector("[data-queue-elapsed]").textContent = `已等待 ${formatVideoWait(elapsed)} · 已尝试 ${queue.attempt || 1} 次`;
+  panel.querySelector("[data-queue-next]").textContent = phase === "waiting"
+    ? `下次尝试 ${Math.max(0, Math.ceil((Number(queue.retryAt) - Date.now()) / 1000))} 秒后`
+    : phase === "submitting" ? "正在提交，请勿重复点击" : "自动重试已停止";
+  panel.querySelector("[data-queue-hint]").textContent = active
+    ? "本次最多等待约 15 分钟。可切换画布继续工作，请保持页面打开；可停止等待。能否受理取决于服务商容量。"
+    : "反复更换密钥不能保证恢复。请稍后再试，持续失败可展开下方诊断信息联系 Agnes 支持。";
+  const diagnostic = panel.querySelector("[data-queue-diagnostic]");
+  const value = videoQueueDiagnostic(queue, key);
+  if (diagnostic.value !== value) diagnostic.value = value;
+  return true;
+}
+
+function refreshVideoQueuePanels() {
+  const card = selectedCard();
+  renderVideoQueuePanel("videoQueuePanel", card?.type === "video" ? card.videoQueue : null, JSON.stringify(["node", canvasLibrary.activeCanvasId, card?.id]), card?.task);
+  renderVideoQueuePanel("productVideoQueuePanel", state.productVideoWorkspace.videoQueue, JSON.stringify(["product-video", canvasLibrary.activeCanvasId]), state.productVideoWorkspace.task);
+}
+
+function setupVideoQueuePanels() {
+  for (const id of ["videoQueuePanel", "productVideoQueuePanel"]) {
+    const panel = document.getElementById(id);
+    panel.querySelector("[data-queue-copy]").addEventListener("click", async () => {
+      const field = panel.querySelector("[data-queue-diagnostic]");
+      const text = field.value;
+      try {
+        await navigator.clipboard.writeText(text);
+        panel.querySelector("[data-queue-feedback]").textContent = "诊断信息已复制，可粘贴给 Agnes 支持。";
+      } catch {
+        field.focus(); field.select();
+        panel.querySelector("[data-queue-feedback]").textContent = "浏览器未允许自动复制。已选中文本，可按 Ctrl+C，或下载诊断文件。";
+      }
+    });
+    panel.querySelector("[data-queue-download]").addEventListener("click", () => {
+      const url = URL.createObjectURL(new Blob([panel.querySelector("[data-queue-diagnostic]").value], { type: "text/plain;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url; link.download = "Banana-Canvas-video-diagnostic.txt";
+      link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      panel.querySelector("[data-queue-feedback]").textContent = "已准备诊断文件，请查看浏览器下载列表。";
+    });
+  }
+  // Only update the visible status text, avoiding a canvas re-render/save every second.
+  setInterval(refreshVideoQueuePanels, 1000);
 }
 
 function videoQueueRetryDelay(error, attempt) {
   const hintedSeconds = Number(error?.retryAfterSeconds || 0);
-  if (Number.isFinite(hintedSeconds) && hintedSeconds > 0) return Math.max(1000, hintedSeconds * 1000);
-  return [60000, 120000, 240000][attempt] || 240000;
+  if (Number.isFinite(hintedSeconds) && hintedSeconds > 0) return Math.max(60000, hintedSeconds * 1000);
+  return 60000 + Math.floor(Math.random() * 15000);
 }
 
 function cancelVideoQueueWait(key) {
@@ -4100,14 +4218,33 @@ async function requestAgnesVideo(body, { onQueueWait, isCancelled, waitKey } = {
   const wait = { waiting: false, cancelled: false };
   if (waitKey) videoSubmissionWaits.set(waitKey, wait);
   const cancelled = () => wait.cancelled || isCancelled?.();
-  const cancelError = () => Object.assign(new Error("已停止本次视频等待，不会继续重试提交。已创建的视频任务不受影响。"), { code: "VIDEO_WAIT_CANCELLED" });
-  const maxRetries = 3;
+  const startedAt = Date.now();
+  const deadline = startedAt + VIDEO_QUEUE_WAIT_BUDGET;
+  let queue = null;
+  const notify = (phase, error = {}, attempt = 1, retryAt = 0) => {
+    queue = { phase, startedAt, elapsedMs: Date.now() - startedAt, updatedAt: Date.now(), retryAt, attempt, rejected: Boolean(queue?.rejected || error.upstreamCode),
+      retryAfterSeconds: Number.isFinite(Number(error.retryAfterSeconds)) ? Math.max(0, Number(error.retryAfterSeconds)) : 0,
+      region: body.agnesRegion, local: String(error.upstreamCode || "").startsWith("local_"),
+      requestId: String(error.requestId || "").match(/^[\w-]{1,128}$/)?.[0] || queue?.requestId || "" };
+    onQueueWait?.({ queue: { ...queue }, message: phase === "waiting" ? "服务繁忙，等待稍后提交；尚未取得任务 ID。" : phase === "submitting" ? "正在提交请求，尚未取得任务 ID。" : "本次视频等待已停止，提示词和参考图已保留。" });
+  };
+  const cancelError = () => {
+    notify("stopped", { upstreamCode: queue?.local ? "local_video_cooldown" : "video_queue_full" }, queue?.attempt || 1);
+    return Object.assign(new Error("已停止本次视频等待，提示词和参考图已保留。"), { code: "VIDEO_WAIT_CANCELLED" });
+  };
+  const stopWaiting = (error, attempt) => {
+    notify("exhausted", error, attempt);
+    error.code = "VIDEO_QUEUE_WAIT_ENDED";
+    error.message = "本次等待已结束，尚未取得任务 ID。请稍后重新尝试，或复制诊断信息联系 Agnes 支持。";
+    return error;
+  };
+  const maxRetries = 15;
   try {
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     if (cancelled()) throw cancelError();
     try {
       wait.waiting = false;
-      if (attempt > 0) onQueueWait?.({ remainingSeconds: 0, attempt, maxRetries, message: "等待结束，正在提交视频请求，请勿重复点击。" });
+      notify("submitting", attempt > 0 ? { upstreamCode: queue?.local ? "local_video_cooldown" : "video_queue_full" } : {}, attempt + 1);
       return await postJson("/api/agnes/video", body);
     } catch (error) {
       const existing = error.data?.details?.response;
@@ -4116,19 +4253,20 @@ async function requestAgnesVideo(body, { onQueueWait, isCancelled, waitKey } = {
       if (videoId || taskId) return { response: { ...existing, video_id: videoId || "", task_id: taskId || "" } };
       if (existing?.id || existing?.error?.id) { error.submissionUnknown = true; error.message = "服务商响应中存在标识，但无法确认是否已创建视频任务。请先检查对应控制台，停止自动重试以避免重复提交。"; throw error; }
       if (!isVideoQueueFullError(error) || attempt >= maxRetries) {
-        if (isVideoQueueFullError(error)) error.message = videoQueueFullMessage(0, maxRetries, maxRetries, error, body);
+        if (isVideoQueueFullError(error)) throw stopWaiting(error, attempt + 1);
         throw error;
       }
       const delayMs = videoQueueRetryDelay(error, attempt);
-      if (delayMs > 600000) { error.message = videoQueueFullMessage(0, attempt, maxRetries, error, body); throw error; }
+      if (Date.now() + delayMs >= deadline) throw stopWaiting(error, attempt + 1);
       wait.waiting = true;
-      const startedAt = Date.now();
-      while (Date.now() - startedAt < delayMs) {
+      const retryAt = Date.now() + delayMs;
+      notify("waiting", error, attempt + 1, retryAt);
+      while (Date.now() < retryAt) {
         if (cancelled()) throw cancelError();
-        const remainingSeconds = Math.max(1, Math.ceil((delayMs - (Date.now() - startedAt)) / 1000));
-        onQueueWait?.({ remainingSeconds, attempt: attempt + 1, maxRetries, message: videoQueueFullMessage(remainingSeconds, attempt + 1, maxRetries, error, body) });
-        await sleep(Math.min(1000, delayMs));
+        await sleep(Math.min(1000, Math.max(1, retryAt - Date.now())));
       }
+      // A sleeping/background tab must not send an expired retry after waking up.
+      if (Date.now() >= deadline) throw stopWaiting(error, attempt + 1);
     }
   }
   throw new Error("Agnes 视频队列繁忙，请稍后重试。");
@@ -4782,14 +4920,15 @@ async function generateSelected() {
     }
     return;
   }
-  updateSelected({ status: "running", progress: 8, error: "" });
+  updateSelected({ status: "running", progress: card.type === "video" ? 0 : 8, error: "", videoQueue: null });
   try {
     if (settings.provider === "custom") await generateCustom(card, apiKey, prompt, originCanvasId);
     else if (card.type === "image") await generateAgnesImage(card, apiKey, prompt, originCanvasId);
     else await generateAgnesVideo(card, apiKey, prompt, originCanvasId);
   } catch (error) {
     if (originLibrary !== canvasLibrary) return;
-    updateCard(card.id, { status: "error", progress: 0, error: error.message }, originCanvasId);
+    const queueEnded = ["VIDEO_WAIT_CANCELLED", "VIDEO_QUEUE_WAIT_ENDED"].includes(error.code);
+    updateCard(card.id, { status: queueEnded ? "idle" : "error", progress: 0, error: error.message, ...(queueEnded ? {} : { videoQueue: null }) }, originCanvasId);
   }
   } finally {
     generationLocks.delete(lockKey);
@@ -4838,13 +4977,15 @@ async function generateAgnesVideo(card, apiKey, prompt, originCanvasId) {
   const created = await requestAgnesVideo({ apiKey, ...context, prompt, duration: card.duration, resolution: card.videoResolution, aspect: card.aspect, imageRefs: cardRefs(card), width, height, num_frames: normalizeVideoFrameCount(numFrames), frame_rate: card.frame_rate || 24, negative_prompt: card.negative_prompt, generate_audio: card.generate_audio }, {
     waitKey: JSON.stringify(["node", originCanvasId, card.id]),
     isCancelled: () => originLibrary !== canvasLibrary || !findCanvasCard(originCanvasId, card.id),
-    onQueueWait: ({ remainingSeconds, attempt, maxRetries, message }) => originLibrary === canvasLibrary && updateCard(card.id, {
-      status: "running",
-      progress: 8,
-      error: message || videoQueueFullMessage(remainingSeconds, attempt, maxRetries)
+    onQueueWait: ({ queue, message }) => originLibrary === canvasLibrary && updateCard(card.id, {
+      status: ["stopped", "exhausted"].includes(queue.phase) ? "idle" : "running",
+      progress: 0,
+      videoQueue: queue,
+      error: message
     }, originCanvasId)
   });
   if (originLibrary !== canvasLibrary) return;
+  updateCard(card.id, { videoQueue: null, error: "" }, originCanvasId);
   const response = created.response || {};
   if (response.status === "failed") throw new Error(response.error?.message || (typeof response.error === "string" ? response.error : "Agnes 视频任务已失败。"));
   const directUrl = response.status === "completed" ? response.url || response.video_url || response.result?.url : "";
@@ -5092,6 +5233,7 @@ function cloneClipboardNodes(positionCard) {
     next.status = next.status === "running" || next.status === "queued" ? "idle" : next.status;
     next.progress = next.status === "idle" ? 0 : next.progress;
     next.task = null;
+    next.videoQueue = null;
     return next;
   });
   const edges = state.clipboard.edges

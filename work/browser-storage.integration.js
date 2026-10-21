@@ -134,7 +134,7 @@ async function waitFor(probe) {
         selectSingle('legacy-new');const pending=generateSelected();
         await new Promise(resolve=>setTimeout(resolve,30));
         const button=document.getElementById('cancelVideoWait'),visible=!button.classList.contains('hidden');
-        const message=findCard('legacy-new').error;button.click();await pending;
+        const message=document.querySelector('#videoQueuePanel [data-queue-diagnostic]').value;button.click();await pending;
         return {calls,visible,message,stopped:findCard('legacy-new').error,hidden:button.classList.contains('hidden')};
       } finally {window.fetch=original;}
     })()`);

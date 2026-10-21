@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Banana Canvas</title>
-    <link rel="stylesheet" href="/styles.css?v=canvas-controls-15">
+    <link rel="stylesheet" href="/styles.css?v=canvas-controls-16">
   </head>
   <body>
     <div class="app">
@@ -172,6 +172,13 @@
                   <button id="videoImageUrl" class="text-btn hidden" type="button">添加视频参考图链接</button>
                 </div>
                 <div id="statusBox" class="status-box"></div>
+                <section id="videoQueuePanel" class="video-queue-panel hidden" aria-label="视频提交状态">
+                  <strong data-queue-title role="status"></strong>
+                  <p data-queue-description></p>
+                  <div class="video-queue-metrics"><span data-queue-elapsed></span><span data-queue-next></span></div>
+                  <p class="video-queue-hint" data-queue-hint></p>
+                  <details><summary>排查说明与诊断信息</summary><p>等待重试尚未取得上游排队位置。持续拥堵可稍后再试，或把诊断信息交给 Agnes 支持核查。信息不包含 API Key、提示词或参考图片。</p><textarea data-queue-diagnostic readonly aria-label="视频诊断信息" spellcheck="false"></textarea><div class="video-queue-actions"><button class="text-btn" type="button" data-queue-copy>复制诊断信息</button><button class="text-btn" type="button" data-queue-download>下载诊断.txt</button></div><span data-queue-feedback role="status"></span></details>
+                </section>
               </div>
               <div id="resultBox" class="result-box"></div>
             </div>
@@ -260,6 +267,13 @@
               <label><span>生成音频</span><select id="productVideoAudio"><option value="false" selected>否</option><option value="true">是</option></select></label>
             </div>
             <div id="productVideoStatus" class="commerce-workspace-status" role="status"></div>
+            <section id="productVideoQueuePanel" class="video-queue-panel hidden" aria-label="产品视频提交状态">
+              <strong data-queue-title role="status"></strong>
+              <p data-queue-description></p>
+              <div class="video-queue-metrics"><span data-queue-elapsed></span><span data-queue-next></span></div>
+              <p class="video-queue-hint" data-queue-hint></p>
+              <details><summary>排查说明与诊断信息</summary><p>等待重试尚未取得上游排队位置。持续拥堵可稍后再试，或把诊断信息交给 Agnes 支持核查。信息不包含 API Key、提示词或参考图片。</p><textarea data-queue-diagnostic readonly aria-label="产品视频诊断信息" spellcheck="false"></textarea><div class="video-queue-actions"><button class="text-btn" type="button" data-queue-copy>复制诊断信息</button><button class="text-btn" type="button" data-queue-download>下载诊断.txt</button></div><span data-queue-feedback role="status"></span></details>
+            </section>
             <button id="productVideoGenerate" class="commerce-workspace-generate" type="button"><span>生成产品视频</span><strong>↑</strong></button>
             <button id="cancelProductVideoWait" class="text-btn hidden" type="button">停止本次等待</button>
           </div>
@@ -482,7 +496,7 @@
       })();
     </script>
     <script src="/canvas-engine.js?v=canvas-interactions-5"></script>
-    <script src="/app.js?v=canvas-interactions-22"></script>
+    <script src="/app.js?v=canvas-interactions-23"></script>
   </body>
 </html>
 

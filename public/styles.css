@@ -1083,6 +1083,27 @@ input:focus, select:focus, textarea:focus {
 .status-box.error { color: var(--danger); }
 .result-box a { color: var(--banana); }
 
+.video-queue-panel {
+  padding: 14px;
+  border: 1px solid rgba(247, 223, 74, 0.28);
+  border-radius: 12px;
+  background: #27271c;
+  color: #e4e2ce;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.video-queue-panel > strong { color: var(--warning, #f7df4a); }
+.video-queue-panel p { margin: 7px 0; }
+.video-queue-metrics, .video-queue-actions { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.video-queue-metrics { font-variant-numeric: tabular-nums; color: #fff4ae; }
+.video-queue-panel .video-queue-hint, .video-queue-panel details { color: #bdbdac; font-size: 12px; }
+.video-queue-panel summary { cursor: pointer; padding: 4px 0; }
+.video-queue-panel textarea { width: 100%; min-height: 150px; resize: vertical; font: 12px/1.5 monospace; }
+.video-queue-panel [data-queue-feedback] { display: block; min-height: 1.6em; }
+#productVideoQueuePanel { margin-top: 17px; }
+.badge.waiting { background: #403914; color: var(--warning); }
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
