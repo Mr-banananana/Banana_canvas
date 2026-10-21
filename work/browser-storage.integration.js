@@ -170,6 +170,31 @@ async function waitFor(probe) {
       finally {window.fetch=original;}})()`);
     assert.deepEqual(regenerated,{model:'agnes-video-2.5-flash',resolution:'720p',duration:12,storedModel:'agnes-video-2.5-flash',storedResolution:'720p'});
     console.log('PASS browser: a finished standard task starts a new Flash generation with valid parameters without requiring a reload');
+    const documentedFailure=await cdp.evaluate(`(async()=>{const card=findCard('paid-task');card.task={video_id:'video_doc_failed',model:'agnes-video-2.5-flash',agnesRegion:'global'};card.status='running';
+      const originalFetch=window.fetch,originalSleep=sleep;let queries=0;sleep=async()=>{};
+      window.fetch=async()=>{queries++;return new Response(JSON.stringify({ok:true,response:{id:'task_doc_failed',video_id:'video_doc_failed',object:'video',status:'failed',progress:100,error:{message:'Invalid reference media'}}}),{status:200,headers:{'content-type':'application/json'}});};
+      try {selectSingle(card.id);await generateSelected();return {queries,task:card.task,status:card.status,error:card.error};}
+      finally {window.fetch=originalFetch;sleep=originalSleep;}})()`);
+    assert.equal(documentedFailure.queries,1);assert.equal(documentedFailure.task,null);assert.equal(documentedFailure.status,'error');assert.match(documentedFailure.error,/Invalid reference media/);
+    console.log('PASS browser: documented failed video query ends the node task and displays the provider reason');
+    const delayedResult=await cdp.evaluate(`(async()=>{const card=findCard('paid-task');card.task=null;card.status='idle';
+      const originalFetch=window.fetch,originalSleep=sleep;let creates=0,queries=0,earlyAssets=0;sleep=async()=>{};
+      window.fetch=async(url)=>{let response;
+        if(url==='/api/agnes/video'){creates++;response={id:'task_doc_waiting',video_id:'video_doc_waiting',status:'queued',url:'https://example.test/premature.mp4'};}
+        else{queries++;earlyAssets+=state.cards.filter(c=>c.resultUrl==='https://example.test/premature.mp4').length;
+          response=queries===1?{status:'in_progress',progress:50,url:'https://example.test/premature.mp4'}:{status:'completed',progress:100,internal_status:'pending',internal_progress:0,url:'https://example.test/doc-ready.mp4'};}
+        return new Response(JSON.stringify({ok:true,response}),{status:200,headers:{'content-type':'application/json'}});};
+      try {selectSingle(card.id);await generateSelected();return {creates,queries,earlyAssets,task:card.task,status:card.status,url:card.resultUrl};}
+      finally {window.fetch=originalFetch;sleep=originalSleep;}})()`);
+    assert.deepEqual(delayedResult,{creates:1,queries:2,earlyAssets:0,task:null,status:'done',url:'https://example.test/doc-ready.mp4'});
+    console.log('PASS browser: video URL is delivered only after completed status, regardless of pending internal fields');
+    const failedProduct=await cdp.evaluate(`(async()=>{const workspace=state.productVideoWorkspace;workspace.task={video_id:'video_product_failed',model:'agnes-video-2.5-flash',agnesRegion:'global'};workspace.status='running';
+      const originalFetch=window.fetch,originalSleep=sleep;let queries=0;sleep=async()=>{};
+      window.fetch=async()=>{queries++;return new Response(JSON.stringify({ok:true,response:{id:'task_product_failed',video_id:'video_product_failed',object:'video',status:'failed',progress:100,error:{message:'Invalid reference media'}}}),{status:200,headers:{'content-type':'application/json'}});};
+      try {await generateProductVideo();return {queries,task:workspace.task,status:workspace.status,error:workspace.error};}
+      finally {window.fetch=originalFetch;sleep=originalSleep;}})()`);
+    assert.equal(failedProduct.queries,1);assert.equal(failedProduct.task,null);assert.equal(failedProduct.status,'error');assert.match(failedProduct.error,/Invalid reference media/);
+    console.log('PASS browser: documented failed product video query clears the task and stops polling');
   } finally {
     if(cdp) {try{await cdp.send('Browser.close');}catch{}cdp.close();}
     if(edge)edge.kill();server.kill();

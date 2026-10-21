@@ -2359,7 +2359,8 @@ async function generateProductVideo() {
     });
     if (originLibrary !== canvasLibrary) return;
     const response = created.response || {};
-    const directUrl = response.url || response.video_url || response.result?.url;
+    if (response.status === "failed") throw new Error(response.error?.message || (typeof response.error === "string" ? response.error : "Agnes 产品视频任务已失败。"));
+    const directUrl = response.status === "completed" ? response.url || response.video_url || response.result?.url : "";
     if (directUrl) {
       storeProductVideoResult(directUrl, resultPrompt, originCanvasId);
     } else {
@@ -4845,7 +4846,8 @@ async function generateAgnesVideo(card, apiKey, prompt, originCanvasId) {
   });
   if (originLibrary !== canvasLibrary) return;
   const response = created.response || {};
-  const directUrl = response.url || response.video_url || response.result?.url;
+  if (response.status === "failed") throw new Error(response.error?.message || (typeof response.error === "string" ? response.error : "Agnes 视频任务已失败。"));
+  const directUrl = response.status === "completed" ? response.url || response.video_url || response.result?.url : "";
   if (directUrl) {
     duplicateResultCard(card, "video", directUrl, "video/mp4", originCanvasId, { status: "done", progress: 100, resultUrl: directUrl, mime: "video/mp4", error: "", task: null });
     return;

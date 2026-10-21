@@ -346,7 +346,12 @@ async function fetchJson(url, options, timeoutMs = 360000, retryOptions = {}) {
       data = text;
     }
   }
-  if (response.status < 200 || response.status >= 300 || (data && typeof data === "object" && data.error)) {
+  // A queried video task can finish with status=failed and an error object in a
+  // successful HTTP response. Preserve that terminal state for the caller.
+  const failedVideoTask = retryOptions.allowFailedVideoTask === true && data && typeof data === "object" &&
+    data.object === "video" && data.status === "failed" &&
+    [data.video_id, data.task_id, data.id].some(value => typeof value === "string" && value.trim());
+  if (response.status < 200 || response.status >= 300 || (data && typeof data === "object" && data.error && !failedVideoTask)) {
     const error = new Error("Upstream API request failed.");
     error.upstreamCode = data && typeof data === "object"
       ? String(data.code || data.error?.code || "")
@@ -615,7 +620,7 @@ async function handleAgnesVideoResult(req, res) {
   const data = await fetchJson(url, {
     method: "GET",
     headers: { "Authorization": `Bearer ${apiKey}` }
-  }, 120000, { networkRetries: 2, directFallback: true });
+  }, 120000, { networkRetries: 2, directFallback: true, allowFailedVideoTask: true });
   sendJson(res, 200, { ok: true, provider: "agnes", response: data });
 }
 

@@ -11,6 +11,7 @@ const ctx=vm.createContext({require:name=>name==='http'?{...http,createServer:ha
   if(mode==='queue')return {status:503,headers:{'retry-after':new Date(now+240000).toUTCString(),'content-type':'application/json','x-request-id':'gateway-queue-proof'},body:JSON.stringify({error:{code:'video_queue_full',message:'Video queue is full'}})};
   if(mode==='task-with-error')return {status:503,headers:{'content-type':'application/json'},body:JSON.stringify({video_id:'paid-existing',error:{code:'video_queue_full',message:'queue'}})};
   if(mode==='envelope')return {status:200,headers:{'content-type':'application/json'},body:JSON.stringify({error:{code:'video_queue_full',message:'Video queue is full (request id: envelope-proof)'}})};
+  if(mode==='failed-task')return {status:200,headers:{'content-type':'application/json'},body:JSON.stringify({id:'task_failed',video_id:'video_failed',task_id:'task_failed',object:'video',model:'agnes-video-2.5-flash',status:'failed',progress:100,metadata:null,error:{message:'Invalid reference media'}})};
   return {status:200,headers:{'content-type':'application/json'},body:JSON.stringify({video_id:'accepted'})};
 }});
 (async()=>{
@@ -35,5 +36,10 @@ const ctx=vm.createContext({require:name=>name==='http'?{...http,createServer:ha
   console.log('PASS HTTP: rejected response with an existing video ID is returned for polling');
   mode='envelope';const envelope=await post('/api/agnes/video','fixture-three');assert.equal(envelope.status,503);assert.equal(envelope.data.upstreamCode,'video_queue_full');assert.equal(envelope.data.requestId,'envelope-proof');
   console.log('PASS HTTP: HTTP 200 error envelope retains its real queue reason and request ID');
+  mode='failed-task';const failed=await fetch(base+'/api/agnes/video-result',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({apiKey:'fixture-query',video_id:'video_failed',model:'agnes-video-2.5-flash'})});
+  assert.equal(failed.status,200);const failedBody=await failed.json();assert.equal(failedBody.response.status,'failed');assert.equal(failedBody.response.error.message,'Invalid reference media');
+  console.log('PASS HTTP: documented failed video task reaches polling as a terminal state instead of a gateway error');
+  const failedImage=await post('/api/agnes/image');assert.equal(failedImage.status,400);
+  console.log('PASS HTTP: accepting failed video query objects never bypasses image error envelopes');
  } finally {if(service){service.closeAllConnections();await new Promise(resolve=>service.close(resolve));}}
 })().catch(error=>{console.error(error);process.exitCode=1;});
