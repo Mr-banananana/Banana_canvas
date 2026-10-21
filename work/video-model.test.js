@@ -8,9 +8,10 @@ function serverFixture(payload) {
   const ctx={URL,parseBody:async()=>payload,requireApiKey:()=> 'fixture-key',compactObject:value=>Object.fromEntries(Object.entries(value).filter(([,v])=>v!==undefined)),
     agnesHeaders:()=>({}),agnesBaseFor:()=> 'https://apihub.agnes-ai.com',normalizeVideoFrameCount:x=>x,
     fetchJson:async(url,options)=>{ctx.url=url;ctx.body=options.body?JSON.parse(options.body):null;return {video_id:'video-accepted',status:'queued'};},
+    withVideoSubmissionSlot:async(key,region,submit)=>submit(),
     sendJson:(res,status,data)=>{ctx.status=status;ctx.data=data;}};
   vm.createContext(ctx);
-  vm.runInContext(extract(server,'buildAgnesVideoRequest')+'\n'+extract(server,'handleAgnesVideo')+'\n'+extract(server,'handleAgnesVideoResult'),ctx);
+  vm.runInContext(['buildAgnesVideoRequest','videoTaskFromResponse','handleAgnesVideo','handleAgnesVideoResult'].map(name=>extract(server,name)).join('\n'),ctx);
   return ctx;
 }
 tests.push(['retired model create request migrates to Flash with 2.5 parameters',async()=>{

@@ -127,6 +127,23 @@ async function waitFor(probe) {
     })()`);
     assert.equal(channelError.calls,1);assert.equal(channelError.model,'agnes-video-2.5-flash');assert.equal(channelError.status,'error');assert.match(channelError.error,/没有可用通道/);assert.match(channelError.error,/screenshot-regression/);
     console.log('PASS browser: unavailable channel is actionable, preserves request ID and submits only once');
+    const queueCancelled=await cdp.evaluate(`(async()=>{
+      const original=window.fetch;let calls=0;
+      window.fetch=async()=>{calls++;return new Response(JSON.stringify({error:'Upstream API request failed.',requestId:'queue-browser-proof',retryAfterSeconds:240,details:{status:503,response:{error:{code:'video_queue_full',message:'Video queue is full'}}}}),{status:503,headers:{'content-type':'application/json'}});};
+      try {
+        selectSingle('legacy-new');const pending=generateSelected();
+        await new Promise(resolve=>setTimeout(resolve,30));
+        const button=document.getElementById('cancelVideoWait'),visible=!button.classList.contains('hidden');
+        const message=findCard('legacy-new').error;button.click();await pending;
+        return {calls,visible,message,stopped:findCard('legacy-new').error,hidden:button.classList.contains('hidden')};
+      } finally {window.fetch=original;}
+    })()`);
+    assert.equal(queueCancelled.calls,1);assert(queueCancelled.visible);assert(queueCancelled.hidden);assert.match(queueCancelled.message,/queue-browser-proof/);assert.match(queueCancelled.stopped,/停止本次视频等待/);
+    console.log('PASS browser: real queue countdown exposes a working stop button and never resubmits after cancellation');
+    const imageUI=await cdp.evaluate(`(()=>{const image=createCard('image',{prompt:'product'});selectSingle(image.id);renderInspector();
+      return {request:agnesImageRequest(image,'fixture-key','product'),menu:els.sizePickerMenu.innerHTML,summary:els.sizePickerButton.textContent};})()`);
+    assert(!('quality'in imageUI.request));assert(!imageUI.menu.includes('data-size-action="imageQuality"'));assert(!imageUI.summary.includes('中'));
+    console.log('PASS browser: Agnes image quality is absent from requests and hidden in generation controls');
   } finally {
     if(cdp) {try{await cdp.send('Browser.close');}catch{}cdp.close();}
     if(edge)edge.kill();server.kill();

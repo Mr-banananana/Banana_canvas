@@ -192,6 +192,7 @@ let assetDatabasePromise = null;
 const persistedWorkspaceAssetUrls = new Map();
 const workspaceAssetWritePromises = new Map();
 const generationLocks = new Set();
+const videoSubmissionWaits = new Map();
 
 const settings = {
   provider: "agnes",
@@ -439,7 +440,10 @@ function getApiKey() {
 }
 
 function setApiKey(value) {
-  if (value.trim()) sessionStorage.setItem(API_KEY_SESSION, value.trim());
+  let key = String(value || "").trim();
+  if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) key = key.slice(1, -1).trim();
+  key = key.replace(/^Bearer\s+/i, "").trim();
+  if (key) sessionStorage.setItem(API_KEY_SESSION, key);
   else sessionStorage.removeItem(API_KEY_SESSION);
 }
 
@@ -1234,7 +1238,6 @@ function agnesImageRequest(card, apiKey, prompt, imageRefs = [], imageRoles = []
     apiKey,
     model,
     prompt: card.type === "commerce" ? commerceImagePrompt(prompt) : prompt,
-    quality: card.imageQuality || "medium",
     responseFormat: settings.imageResponseFormat,
     imageRefs,
     imageRoles,
@@ -2111,6 +2114,7 @@ function renderCommerceWorkspace() {
   if (document.activeElement !== els.commerceWorkspacePrompt) els.commerceWorkspacePrompt.value = workspace.prompt || "";
   els.commerceWorkspaceAspect.value = workspace.aspect;
   els.commerceWorkspaceQuality.value = workspace.quality;
+  els.commerceWorkspaceQuality.closest("label").classList.toggle("hidden", settings.provider === "agnes");
   els.commerceWorkspaceResolution.value = workspace.resolution;
   els.commerceWorkspaceStatus.textContent = commerceWorkspaceStatusText();
   els.commerceWorkspaceStatus.className = `commerce-workspace-status ${workspace.status === "error" || workspace.promptStatus === "error" ? "error" : workspace.status === "running" || workspace.promptStatus === "running" ? "running" : workspace.results.length ? "success" : ""}`;
@@ -2183,6 +2187,7 @@ function renderProductVideoWorkspace() {
   els.productVideoStatus.className = `commerce-workspace-status ${workspace.status === "error" ? "error" : workspace.status === "running" ? "running" : workspace.results.length ? "success" : ""}`;
   els.productVideoGenerate.disabled = generationLocks.has(JSON.stringify(["product-video", canvasLibrary.activeCanvasId])) || (!workspace.productRef && !workspace.task);
   els.productVideoGenerate.querySelector("span").textContent = workspace.task ? "继续查询视频任务" : "生成产品视频";
+  document.getElementById("cancelProductVideoWait").classList.toggle("hidden", !videoSubmissionWaits.get(JSON.stringify(["product-video", canvasLibrary.activeCanvasId]))?.waiting);
   document.querySelectorAll("[data-product-video-slot]").forEach(button => {
     button.classList.toggle("error", workspace.status === "error" && !workspace.productRef);
     button.innerHTML = productVideoSlotMarkup();
@@ -2342,11 +2347,12 @@ async function generateProductVideo() {
   const resultPrompt = request.prompt;
   try {
     const created = await requestAgnesVideo(request, {
+      waitKey: lockKey,
       isCancelled: () => originLibrary !== canvasLibrary,
-      onQueueWait: ({ remainingSeconds, attempt, maxRetries }) => originLibrary === canvasLibrary && mutateCanvasById(originCanvasId, targetState => {
+      onQueueWait: ({ remainingSeconds, attempt, maxRetries, message }) => originLibrary === canvasLibrary && mutateCanvasById(originCanvasId, targetState => {
         targetState.productVideoWorkspace.status = "running";
         targetState.productVideoWorkspace.progress = 8;
-        targetState.productVideoWorkspace.error = videoQueueFullMessage(remainingSeconds, attempt, maxRetries);
+        targetState.productVideoWorkspace.error = message || videoQueueFullMessage(remainingSeconds, attempt, maxRetries);
       }, renderProductVideoWorkspace)
     });
     if (originLibrary !== canvasLibrary) return;
@@ -2751,7 +2757,7 @@ function renderImageSizeMenu(card) {
   const quality = card.imageQuality || "medium";
   const resolution = card.imageResolution || "1k";
   return `<section class="size-section image-aspect-section"><h3>比例</h3><div class="aspect-grid image-aspect-grid">${ASPECT_OPTIONS.map(option => aspectButton(option, aspect)).join("")}</div></section>
-    <section class="size-section"><h3>图像质量</h3><div class="segmented-row">${IMAGE_QUALITY_OPTIONS.map(option => `<button type="button" class="size-choice ${option.id === quality ? "selected" : ""}" data-size-action="imageQuality" data-value="${escapeAttr(option.id)}">${escapeHtml(option.label)}</button>`).join("")}</div></section>
+    ${settings.provider === "agnes" ? '<p class="field-hint">当前 Agnes 图片接口由模型决定质量，可选择分辨率。</p>' : `<section class="size-section"><h3>图像质量</h3><div class="segmented-row">${IMAGE_QUALITY_OPTIONS.map(option => `<button type="button" class="size-choice ${option.id === quality ? "selected" : ""}" data-size-action="imageQuality" data-value="${escapeAttr(option.id)}">${escapeHtml(option.label)}</button>`).join("")}</div></section>`}
     <section class="size-section"><h3>分辨率</h3><div class="segmented-row">${IMAGE_RESOLUTION_OPTIONS.map(option => `<button type="button" class="size-choice ${option.id === resolution ? "selected" : ""}" data-size-action="imageResolution" data-value="${escapeAttr(option.id)}">${escapeHtml(option.label)}</button>`).join("")}</div></section>`;
 }
 
@@ -2772,9 +2778,10 @@ function renderVideoSizeMenu(card) {
 
 function sizePickerSummary(card) {
   if (card.type === "video") {
+    if (settings.provider === "agnes" && /^agnes-video-2\.5(?:-flash)?$/.test(resolveVideoModel(card.model))) return `${labelFor(VIDEO_RESOLUTION_OPTIONS, card.videoResolution, "720p")} / ${Number(card.duration || 5)}s / ${labelFor(ASPECT_OPTIONS, card.aspect, "auto")}`;
     return `${labelFor(VIDEO_RESOLUTION_OPTIONS, card.videoResolution, "720p")} / ${Number(card.duration || 5)}s / ${card.generate_audio === false ? "否" : "是"} / ${labelFor(ASPECT_OPTIONS, card.aspect, "auto")}`;
   }
-  return `${labelFor(ASPECT_OPTIONS, card.aspect, "auto")} / ${labelFor(IMAGE_QUALITY_OPTIONS, card.imageQuality, "medium")} / ${labelFor(IMAGE_RESOLUTION_OPTIONS, card.imageResolution, "1k")}`;
+  return `${labelFor(ASPECT_OPTIONS, card.aspect, "auto")} / ${settings.provider === "agnes" ? "" : `${labelFor(IMAGE_QUALITY_OPTIONS, card.imageQuality, "medium")} / `}${labelFor(IMAGE_RESOLUTION_OPTIONS, card.imageResolution, "1k")}`;
 }
 
 function renderSizePicker(card) {
@@ -2864,6 +2871,7 @@ function renderInspector() {
   const resultLink = safeResultLink(card.resultUrl);
   els.generateBtn.disabled = generationLocks.has(JSON.stringify(["node", canvasLibrary.activeCanvasId, card.id]));
   els.generateBtn.querySelector("span").textContent = card.type === "video" && card.task ? "继续查询视频任务" : "生成资产";
+  document.getElementById("cancelVideoWait").classList.toggle("hidden", card.type !== "video" || !videoSubmissionWaits.get(JSON.stringify(["node", canvasLibrary.activeCanvasId, card.id]))?.waiting);
   els.resultBox.innerHTML = resultLink ? `<a href="${escapeAttr(resultLink)}" target="_blank" rel="noreferrer">打开生成结果</a>` : card.resultUrl ? "结果已生成，无法作为网页链接直接打开。" : "";
   requestAnimationFrame(() => {
     if (state.selectedId === card.id) {
@@ -2930,6 +2938,10 @@ function setupSizePicker() {
 
 function bindInputs() {
   setupSizePicker();
+  document.getElementById("cancelVideoWait").addEventListener("click", () => {
+    if (selectedCard()) cancelVideoQueueWait(JSON.stringify(["node", canvasLibrary.activeCanvasId, selectedCard().id]));
+  });
+  document.getElementById("cancelProductVideoWait").addEventListener("click", () => cancelVideoQueueWait(JSON.stringify(["product-video", canvasLibrary.activeCanvasId])));
   document.getElementById("videoImageUrl").addEventListener("click", () => {
     const target = selectedCard();
     if (target?.type !== "video") return;
@@ -3974,12 +3986,15 @@ async function postJson(url, body, { flushLocalState = true } = {}) {
     error.retryable = Boolean(data.retryable);
     error.submissionUnknown = Boolean(data.submissionUnknown);
     error.retryAfterSeconds = Number(data.retryAfterSeconds || data.details?.retryAfterSeconds || 0) || 0;
+    error.requestId = data.requestId || String(error.upstreamMessage).match(/request id:\s*([\w-]{1,128})/i)?.[1] || "";
+    error.waitReason = data.waitReason || "";
     if (upstreamUnauthorized) {
       error.message = "Agnes API Key 验证失败（401）。请确认“Agnes 服务站点”与密钥所属站点一致，并检查密钥是否有效；可在对应 Agnes 控制台重新创建密钥后再试。不要把 API Key 发给他人。";
     }
     if (isUpstreamTimeout(error)) error.message = "Agnes 上游响应超时，请稍后重试。";
     if (isUpstreamNetworkError(error)) error.message = upstreamNetworkMessage(error);
     if (isModelUnavailableError(error)) { error.message = modelUnavailableMessage(error, body); error.retryable = false; }
+    if (error.submissionUnknown) error.message = upstreamNetworkMessage(error);
     throw error;
   }
   return data;
@@ -4000,7 +4015,7 @@ function modelUnavailableMessage(error, body) {
 function isUpstreamNetworkError(error) {
   const code = String(error?.networkCode || "");
   const message = `${error?.message || ""} ${error?.upstreamMessage || ""}`;
-  return Boolean(error?.retryable) || /ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|socket hang up|网络连接被重置|暂时无法连接 Agnes/i.test(`${code} ${message}`);
+  return /ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|LOCAL_SERVICE_UNAVAILABLE|socket hang up|网络连接被重置|暂时无法连接 Agnes/i.test(`${code} ${message}`);
 }
 
 function upstreamNetworkMessage(error) {
@@ -4039,59 +4054,88 @@ function sleep(ms) {
 }
 
 function isVideoQueueFullError(error) {
-  const message = `${error?.message || ""} ${error?.upstreamMessage || ""}`;
+  const response = error?.data?.details?.response;
+  if (error?.submissionUnknown || response?.video_id || response?.task_id || response?.id || response?.error?.video_id || response?.error?.task_id || response?.error?.id || response?.url || response?.video_url) return false;
+  const code = String(error?.upstreamCode || "");
+  if (["local_video_submission_busy", "local_video_cooldown"].includes(code)) return error?.status === 429;
+  if (code && code !== "video_queue_full") return false;
+  const message = error?.upstreamMessage || error?.message || "";
   return error?.status === 503 && (
     error?.upstreamCode === "video_queue_full" ||
     /video_queue_full|video queue is full/i.test(message)
   );
 }
 
-function videoQueueFullMessage(remainingSeconds, attempt, maxRetries) {
+function videoQueueFullMessage(remainingSeconds, attempt, maxRetries, error = {}, body = {}) {
+  const site = (body.agnesRegion || settings.agnesRegion) === "china" ? "api.agnes-ai.cn" : "apihub.agnes-ai.com";
+  const requestId = error.requestId || String(error.upstreamMessage || "").match(/request id:\s*([\w-]{1,128})/i)?.[1] || "";
+  const context = `${body.model || "当前视频模型"} · ${site}${requestId ? ` · 请求编号：${requestId}` : ""}`;
+  const local = String(error.upstreamCode || "").startsWith("local_");
   if (remainingSeconds > 0) {
-    return `Agnes 视频队列已满，${remainingSeconds} 秒后自动重试（${attempt}/${maxRetries}）。当前任务尚未创建，请不要重复点击。`;
+    return `${local ? "视频提交处于冷却/协调等待" : "Agnes 上游视频队列已满"}，${remainingSeconds} 秒后再次尝试（${attempt}/${maxRetries}）。本次请求尚未取得任务 ID，请不要重复点击。可停止本次等待。\n${context}`;
   }
-  return "Agnes 视频队列仍然繁忙，自动重试次数已用完。任务尚未创建，请稍后点击生成重试。";
+  return `视频提交仍被上游队列或冷却限制拒绝，已停止自动重试。请在对应 Agnes 控制台检查已有任务和通道状态；持续失败时将下方请求编号交给服务商排查。程序不会自动切换模型或站点。\n${context}${error.retryAfterSeconds ? `\n上游/本地建议至少等待 ${error.retryAfterSeconds} 秒。` : ""}`;
 }
 
 function videoQueueRetryDelay(error, attempt) {
   const hintedSeconds = Number(error?.retryAfterSeconds || 0);
-  if (hintedSeconds > 0) return Math.min(60000, Math.max(3000, hintedSeconds * 1000));
-  return [5000, 10000, 20000][attempt] || 20000;
+  if (Number.isFinite(hintedSeconds) && hintedSeconds > 0) return Math.max(1000, hintedSeconds * 1000);
+  return [60000, 120000, 240000][attempt] || 240000;
 }
 
-async function requestAgnesVideo(body, { onQueueWait, isCancelled } = {}) {
+function cancelVideoQueueWait(key) {
+  const wait = videoSubmissionWaits.get(key);
+  if (wait?.waiting) wait.cancelled = true;
+}
+
+async function requestAgnesVideo(body, { onQueueWait, isCancelled, waitKey } = {}) {
   body = { ...body, agnesRegion: body.agnesRegion || (settings.agnesRegion === "china" ? "china" : "global") };
+  const wait = { waiting: false, cancelled: false };
+  if (waitKey) videoSubmissionWaits.set(waitKey, wait);
+  const cancelled = () => wait.cancelled || isCancelled?.();
+  const cancelError = () => Object.assign(new Error("已停止本次视频等待，不会继续重试提交。已创建的视频任务不受影响。"), { code: "VIDEO_WAIT_CANCELLED" });
   const maxRetries = 3;
+  try {
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-    if (isCancelled?.()) throw new Error("画布已替换，停止提交旧的视频任务。");
+    if (cancelled()) throw cancelError();
     try {
+      wait.waiting = false;
+      if (attempt > 0) onQueueWait?.({ remainingSeconds: 0, attempt, maxRetries, message: "等待结束，正在提交视频请求，请勿重复点击。" });
       return await postJson("/api/agnes/video", body);
     } catch (error) {
+      const existing = error.data?.details?.response;
+      const videoId = existing?.video_id || existing?.error?.video_id;
+      const taskId = existing?.task_id || existing?.error?.task_id || (/^task[_-]/i.test(String(existing?.id || "")) ? existing.id : /^task[_-]/i.test(String(existing?.error?.id || "")) ? existing.error.id : "");
+      if (videoId || taskId) return { response: { ...existing, video_id: videoId || "", task_id: taskId || "" } };
+      if (existing?.id || existing?.error?.id) { error.submissionUnknown = true; error.message = "服务商响应中存在标识，但无法确认是否已创建视频任务。请先检查对应控制台，停止自动重试以避免重复提交。"; throw error; }
       if (!isVideoQueueFullError(error) || attempt >= maxRetries) {
-        if (isVideoQueueFullError(error)) error.message = videoQueueFullMessage(0, maxRetries, maxRetries);
+        if (isVideoQueueFullError(error)) error.message = videoQueueFullMessage(0, maxRetries, maxRetries, error, body);
         throw error;
       }
       const delayMs = videoQueueRetryDelay(error, attempt);
+      if (delayMs > 600000) { error.message = videoQueueFullMessage(0, attempt, maxRetries, error, body); throw error; }
+      wait.waiting = true;
       const startedAt = Date.now();
       while (Date.now() - startedAt < delayMs) {
-        if (isCancelled?.()) throw new Error("画布已替换，停止提交旧的视频任务。");
+        if (cancelled()) throw cancelError();
         const remainingSeconds = Math.max(1, Math.ceil((delayMs - (Date.now() - startedAt)) / 1000));
-        onQueueWait?.({ remainingSeconds, attempt: attempt + 1, maxRetries });
+        onQueueWait?.({ remainingSeconds, attempt: attempt + 1, maxRetries, message: videoQueueFullMessage(remainingSeconds, attempt + 1, maxRetries, error, body) });
         await sleep(Math.min(1000, delayMs));
       }
     }
   }
   throw new Error("Agnes 视频队列繁忙，请稍后重试。");
+  } finally { if (waitKey) videoSubmissionWaits.delete(waitKey); }
 }
 
 function isRateLimitError(error) {
   const message = `${error.message || ""} ${error.upstreamMessage || ""}`;
-  return error.status === 429 || error.upstreamStatus === 429 || /429|rate limit|too many/i.test(message);
+  return error.status === 429 || error.upstreamStatus === 429 || error.upstreamCode === "rate_limit_exceeded" || /\brate limit(?:ed)?\b|\btoo many requests\b/i.test(message);
 }
 
 function isUpstreamTimeout(error) {
   const message = `${error?.message || ""} ${error?.upstreamMessage || ""}`;
-  return error?.status === 504 || error?.upstreamStatus === 504 || /504|gateway timeout|upstream.*timed out/i.test(message);
+  return error?.status === 504 || error?.upstreamStatus === 504 || /\bHTTP\s*504\b|gateway timeout|upstream.*timed out/i.test(message);
 }
 
 function upstreamTimeoutMessage() {
@@ -4778,11 +4822,12 @@ async function generateAgnesVideo(card, apiKey, prompt, originCanvasId) {
   if (card.num_frames !== numFrames) updateCard(card.id, { num_frames: numFrames }, originCanvasId);
   const context = { agnesRegion: settings.agnesRegion === "china" ? "china" : "global", model: resolveVideoModel(card.model || settings.videoModel) };
   const created = await requestAgnesVideo({ apiKey, ...context, prompt, duration: card.duration, resolution: card.videoResolution, aspect: card.aspect, imageRefs: cardRefs(card), width, height, num_frames: normalizeVideoFrameCount(numFrames), frame_rate: card.frame_rate || 24, negative_prompt: card.negative_prompt, generate_audio: card.generate_audio }, {
-    isCancelled: () => originLibrary !== canvasLibrary,
-    onQueueWait: ({ remainingSeconds, attempt, maxRetries }) => originLibrary === canvasLibrary && updateCard(card.id, {
+    waitKey: JSON.stringify(["node", originCanvasId, card.id]),
+    isCancelled: () => originLibrary !== canvasLibrary || !findCanvasCard(originCanvasId, card.id),
+    onQueueWait: ({ remainingSeconds, attempt, maxRetries, message }) => originLibrary === canvasLibrary && updateCard(card.id, {
       status: "running",
       progress: 8,
-      error: videoQueueFullMessage(remainingSeconds, attempt, maxRetries)
+      error: message || videoQueueFullMessage(remainingSeconds, attempt, maxRetries)
     }, originCanvasId)
   });
   if (originLibrary !== canvasLibrary) return;

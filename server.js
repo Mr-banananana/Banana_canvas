@@ -2,6 +2,7 @@ const http = require("http");
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { URL } = require("url");
 
 const PORT = Number(process.env.PORT || 5337);
@@ -16,6 +17,7 @@ const AGNES_BASES = Object.freeze({
 });
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8" };
+const videoSubmissionGates = new Map();
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -125,12 +127,15 @@ function parseBody(req) {
 }
 
 function requireApiKey(payload) {
-  const apiKey = String(payload.apiKey || "").trim();
+  let apiKey = String(payload.apiKey || "").trim();
+  if ((apiKey.startsWith('"') && apiKey.endsWith('"')) || (apiKey.startsWith("'") && apiKey.endsWith("'"))) apiKey = apiKey.slice(1, -1).trim();
+  apiKey = apiKey.replace(/^Bearer\s+/i, "").trim();
   if (!apiKey) {
     const error = new Error("API Key is required.");
     error.status = 400;
     throw error;
   }
+  if (/\s|[\x00-\x1f\x7f]/.test(apiKey)) throw Object.assign(new Error("API Key 含内部空白或控制字符，请重新完整复制密钥。"), { status: 400 });
   return apiKey;
 }
 
@@ -282,6 +287,14 @@ async function requestUpstream(url, options = {}, timeoutMs = 360000, { bypassPr
   return proxy ? requestThroughProxy(target, proxy, options, timeoutMs) : requestDirect(target, options, timeoutMs);
 }
 
+function parseRetryAfter(value, now = Date.now()) {
+  if (value == null || value === "") return 0;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return seconds > 0 ? Math.ceil(seconds) : 0;
+  const date = Date.parse(String(value));
+  return Number.isFinite(date) ? Math.max(0, Math.ceil((date - now) / 1000)) : 0;
+}
+
 async function fetchJson(url, options, timeoutMs = 360000, retryOptions = {}) {
   let response;
   const networkRetries = Math.max(0, Number(retryOptions.networkRetries || 0));
@@ -333,18 +346,54 @@ async function fetchJson(url, options, timeoutMs = 360000, retryOptions = {}) {
       data = text;
     }
   }
-  if (response.status < 200 || response.status >= 300) {
+  if (response.status < 200 || response.status >= 300 || (data && typeof data === "object" && data.error)) {
     const error = new Error("Upstream API request failed.");
-    error.status = response.status;
-    error.payload = { status: response.status, response: data };
     error.upstreamCode = data && typeof data === "object"
       ? String(data.code || data.error?.code || "")
       : "";
-    error.retryAfterSeconds = Number(response.headers["retry-after"] || 0) || undefined;
+    if (!error.upstreamCode && response.status === 503 && /video queue is full|video_queue_full/i.test(typeof data === "string" ? data : String(data?.error?.message || ""))) error.upstreamCode = "video_queue_full";
+    error.status = response.status >= 400 ? response.status : error.upstreamCode === "video_queue_full" ? 503 : 400;
+    error.payload = { status: error.status, response: data };
+    error.retryAfterSeconds = Math.max(parseRetryAfter(response.headers["retry-after"]), parseRetryAfter(data?.retry_after), parseRetryAfter(data?.error?.retry_after)) || undefined;
+    error.requestId = String(response.headers["x-request-id"] || response.headers["request-id"] || data?.request_id || data?.error?.request_id || String(data?.error?.message || "").match(/request id:\s*([\w-]{1,128})/i)?.[1] || "").slice(0,128);
     error.retryable = error.status === 503 && error.upstreamCode === "video_queue_full";
     throw error;
   }
   return data;
+}
+
+async function withVideoSubmissionSlot(apiKey, region, submit) {
+  const now = Date.now();
+  for (const [key, item] of videoSubmissionGates) {
+    if (!item.inFlight && item.notBefore <= now) videoSubmissionGates.delete(key);
+  }
+  const key = crypto.createHash("sha256").update(`${region}\0${apiKey}`).digest("hex");
+  const entry = videoSubmissionGates.get(key) || { inFlight: false, notBefore: 0, requestId: "", waitReason: "" };
+  const rejected = (code, seconds, reason) => Object.assign(new Error(reason === "upstream_cooldown" ? "上游视频通道处于冷却期，请等待后再提交。" : "本地正在协调同一密钥的视频提交，请等待后再提交。"), {
+    status: 429, upstreamCode: code, retryAfterSeconds: seconds, waitReason: reason, requestId: entry.requestId
+  });
+  if (entry.inFlight) throw rejected("local_video_submission_busy", 60, "local_inflight");
+  if (entry.notBefore > now) throw rejected("local_video_cooldown", Math.ceil((entry.notBefore - now) / 1000), entry.waitReason);
+  if (videoSubmissionGates.size >= 512 && !videoSubmissionGates.has(key)) throw rejected("local_video_submission_busy", 60, "local_capacity");
+  entry.inFlight = true;
+  videoSubmissionGates.set(key, entry);
+  try {
+    const result = await submit();
+    entry.notBefore = Date.now() + 60000;
+    entry.waitReason = "local_spacing";
+    entry.requestId = "";
+    return result;
+  } catch (error) {
+    if ((error.status === 503 && error.upstreamCode === "video_queue_full") || error.status === 429) {
+      entry.notBefore = Date.now() + Math.max(60000, Number(error.retryAfterSeconds || 0) * 1000);
+      entry.waitReason = "upstream_cooldown";
+      entry.requestId = error.requestId || "";
+    }
+    throw error;
+  } finally {
+    entry.inFlight = false;
+    if (entry.notBefore <= Date.now()) videoSubmissionGates.delete(key);
+  }
 }
 
 function agnesHeaders(apiKey) {
@@ -404,7 +453,6 @@ async function handleAgnesImage(req, res) {
     prompt: commercePrompt,
     size: payload.size || "1024x768",
     ratio: payload.ratio || undefined,
-    quality: payload.quality || undefined,
     return_base64: responseFormat === "b64_json" && imageRefs.length === 0 ? true : undefined,
     extra_body: {
       image: imageRefs.length ? imageRefs : undefined,
@@ -520,6 +568,14 @@ function buildAgnesVideoRequest(payload) {
     images: imageRefs.length > 1 ? imageRefs : undefined });
 }
 
+function videoTaskFromResponse(response) {
+  if (!response || typeof response !== "object") return null;
+  const nested = response.error && typeof response.error === "object" ? response.error : {};
+  const videoId = response.video_id || nested.video_id;
+  const taskId = response.task_id || nested.task_id || (/^task[_-]/i.test(String(response.id || "")) ? response.id : /^task[_-]/i.test(String(nested.id || "")) ? nested.id : "");
+  return videoId || taskId ? { ...response, video_id: videoId || "", task_id: taskId || "" } : null;
+}
+
 async function handleAgnesVideo(req, res) {
   const payload = await parseBody(req);
   const apiKey = requireApiKey(payload);
@@ -531,10 +587,21 @@ async function handleAgnesVideo(req, res) {
 
   const body = buildAgnesVideoRequest(payload);
 
-  const data = await fetchJson(`${agnesBaseFor(payload)}/v1/videos`, {
-    method: "POST",
-    headers: agnesHeaders(apiKey),
-    body: JSON.stringify(body)
+  const data = await withVideoSubmissionSlot(apiKey, agnesBaseFor(payload), async () => {
+    try {
+      return await fetchJson(`${agnesBaseFor(payload)}/v1/videos`, {
+        method: "POST", headers: agnesHeaders(apiKey), body: JSON.stringify(body)
+      });
+    } catch (error) {
+      // An ID means a task may already exist, even if the gateway returned an error.
+      const response = error.payload?.response;
+      const task = videoTaskFromResponse(response);
+      if (task) return task;
+      if (response?.status === "completed" && (response.url || response.video_url || response.result?.url)) return response;
+      if (response?.url || response?.video_url || response?.result?.url) error.submissionUnknown = true;
+      if (error.status >= 500 && (response?.id || response?.error?.id)) error.submissionUnknown = true;
+      throw error;
+    }
   });
   sendJson(res, 200, { ok: true, provider: "agnes", request: body, response: data });
 }
@@ -692,6 +759,8 @@ async function route(req, res) {
       retryable: error.retryable || undefined,
       upstreamCode: error.upstreamCode || undefined,
       retryAfterSeconds: error.retryAfterSeconds || undefined,
+      requestId: error.requestId || undefined,
+      waitReason: error.waitReason || undefined,
       submissionUnknown: error.submissionUnknown || undefined
     });
   }
