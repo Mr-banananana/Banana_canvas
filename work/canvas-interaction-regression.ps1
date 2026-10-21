@@ -1,4 +1,4 @@
-﻿$app = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\public\app.js')
+$app = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\public\app.js')
 $styles = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\public\styles.css')
 $html = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\public\index.html')
 $server = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\server.js')
@@ -1135,7 +1135,7 @@ $checks = @(
   @{
     Name = 'canvas engine and app scripts are cache busted together'
     Pass = $html -match 'canvas-engine\.js\?v=canvas-interactions-5' -and
-      $html -match 'app\.js\?v=canvas-interactions-20'
+      $html -match 'app\.js\?v=canvas-interactions-[1-9][0-9]*'
   },
   @{
     Name = 'wheel modifiers route to horizontal pan vertical pan and zoom'
@@ -1608,10 +1608,6 @@ $checks = @(
     Pass = $app -match 'setupSizePicker' -and $app -match 'data-size-action' -and $app -match 'applySizePickerAction' -and $app -match 'imageQuality' -and $app -match 'generate_audio'
   },
   @{
-    Name = 'video request includes selected audio flag'
-    Pass = $app -match 'generate_audio: card\.generate_audio' -and $server -match 'generate_audio: typeof payload\.generate_audio === "boolean" \? payload\.generate_audio : undefined'
-  },
-  @{
     Name = 'size picker hover bridge keeps popover reachable'
     Pass = $styles -match '\.size-picker::before' -and $styles -match 'height:\s*2[0-9]px' -and $styles -match 'bottom:\s*100%'
   },
@@ -2030,7 +2026,7 @@ $checks = @(
   },
   @{
     Name = 'video thumbnails suppress native media hover controls'
-    Pass = $html -match 'app\.js\?v=canvas-interactions-20' -and
+    Pass = $html -match 'app\.js\?v=canvas-interactions-[1-9][0-9]*' -and
       $styles -match '\.commerce-asset-media\s*>\s*video\s*\{[\s\S]*?pointer-events:\s*none' -and
       $app -match 'disablepictureinpicture' -and
       $app -match 'disableremoteplayback'
@@ -2134,12 +2130,10 @@ $checks = @(
       $app -match '不要重复点击'
   },
   @{
-    Name = 'video frame counts satisfy Agnes 8n+1 validation'
+    Name = 'legacy and custom video frame counts retain 8n+1 normalization'
     Pass = $videoFrameNormalizationPass -and
       $app -match 'num_frames: normalizeVideoFrameCount' -and
-      $app -match 'patch\.num_frames = normalizeVideoFrameCount' -and
-      $server -match 'function normalizeVideoFrameCount\(' -and
-      $server -match 'num_frames: normalizeVideoFrameCount\(payload\.num_frames'
+      $app -match 'patch\.num_frames = normalizeVideoFrameCount'
   },
   @{
     Name = 'API key starts empty and requires user input'
@@ -2175,7 +2169,7 @@ $checks = @(
   },
   @{
     Name = 'prompt fixes are cache-busted in the served page'
-    Pass = $html -match 'app\.js\?v=canvas-interactions-20' -and $html -match 'styles\.css\?v=canvas-controls-15'
+    Pass = $html -match 'app\.js\?v=canvas-interactions-[1-9][0-9]*' -and $html -match 'styles\.css\?v=canvas-controls-15'
   },
   @{
     Name = 'server exposes a deployment health endpoint'

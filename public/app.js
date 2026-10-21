@@ -218,7 +218,7 @@ function normalizePollInterval(value) {
 
 function resolveVideoModel(model) {
   const value = String(model || "").trim();
-  return settings.provider !== "custom" && (!value || value === "agnes-video-v2.0") ? "agnes-video-2.5-flash" : value || "agnes-video-2.5-flash";
+  return settings.provider === "custom" ? value || "agnes-video-2.5-flash" : "agnes-video-2.5-flash";
 }
 const NODE_DEFS = {
   text: { title: "文本", label: "TEXT", w: 280, h: 240, prompt: "写一段用于生成视觉资产的提示词。" },
@@ -835,14 +835,13 @@ function normalizeCard(card) {
   card.imageQuality = card.imageQuality || "medium";
   card.imageResolution = card.imageResolution || (card.type === "commerce" ? "2k" : "1k");
   card.videoResolution = card.videoResolution || "720p";
-  if (!card.task && settings.provider !== "custom" && /^agnes-video-2\.5(?:-flash)?$/.test(card.model)) {
-    const resolutions = card.model.endsWith("-flash") ? ["720p"] : ["720p", "1080p", "2k"];
-    if (!resolutions.includes(card.videoResolution)) card.videoResolution = "720p";
+  if (!card.task && settings.provider !== "custom" && card.type === "video") {
+    card.videoResolution = "720p";
   }
   card.frame_rate = Number(card.frame_rate || 24);
   if (!Number.isFinite(card.frame_rate) || card.frame_rate <= 0) card.frame_rate = 24;
   card.duration = Number(card.duration || Math.max(4, Math.round((Number(card.num_frames || 121) - 1) / Number(card.frame_rate || 24))) || 5);
-  if (!card.task && settings.provider !== "custom" && /^agnes-video-2\.5(?:-flash)?$/.test(card.model)) card.duration = Math.min(12, Math.max(4, Math.round(card.duration)));
+  if (!card.task && settings.provider !== "custom" && card.type === "video") card.duration = Math.min(12, Math.max(4, Math.round(card.duration)));
   card.generate_audio = typeof card.generate_audio === "boolean" ? card.generate_audio : true;
   card.size = card.size || (card.type === "video" ? sizeForVideo(card.aspect, card.videoResolution) : sizeForImage(card.aspect, card.imageResolution));
   card.num_frames = normalizeVideoFrameCount(card.num_frames || durationToFrames(card.duration, card.frame_rate), durationToFrames(card.duration, card.frame_rate));
@@ -1153,6 +1152,7 @@ function syncSettingsForm() {
   els.imageModel.value = settings.imageModel;
   els.promptModel.value = settings.promptModel || "agnes-2.0-flash";
   els.videoModel.value = settings.videoModel;
+  els.videoModel.readOnly = settings.provider !== "custom";
   els.imageResponseFormat.value = settings.imageResponseFormat;
   settings.pollInterval = normalizePollInterval(settings.pollInterval);
   els.pollInterval.value = String(settings.pollInterval);
@@ -1168,6 +1168,8 @@ function collectSettings() {
   settings.imageModel = els.imageModel.value;
   settings.promptModel = els.promptModel.value.trim() || "agnes-2.0-flash";
   settings.videoModel = resolveVideoModel(els.videoModel.value);
+  els.videoModel.value = settings.videoModel;
+  els.videoModel.readOnly = settings.provider !== "custom";
   settings.imageResponseFormat = els.imageResponseFormat.value;
   settings.pollInterval = normalizePollInterval(els.pollInterval.value);
   settings.customEndpoint = els.customEndpoint.value.trim();
@@ -2171,8 +2173,8 @@ function renderProductVideoWorkspace() {
   const workspace = state.productVideoWorkspace;
   if (!els.productVideoWorkspace || !workspace) return;
   const currentModel = resolveVideoModel(settings.videoModel);
-  const modernVideo = settings.provider !== "custom" && /^agnes-video-2\.5(?:-flash)?$/.test(currentModel);
-  const allowedResolutions = modernVideo ? (currentModel.endsWith("-flash") ? ["720p"] : ["720p", "1080p"]) : ["480p", "720p", "1080p"];
+  const modernVideo = settings.provider !== "custom" && currentModel === "agnes-video-2.5-flash";
+  const allowedResolutions = modernVideo ? ["720p"] : ["480p", "720p", "1080p"];
   for (const option of els.productVideoResolution.options) option.disabled = !allowedResolutions.includes(option.value);
   if (!allowedResolutions.includes(workspace.resolution)) workspace.resolution = "720p";
   els.productVideoFps.closest("label").classList.toggle("hidden", modernVideo);
@@ -2276,7 +2278,7 @@ function productVideoRequest(apiKey) {
   const { width, height } = parseSize(sizeForVideo(workspace.aspect, workspace.resolution));
   return {
     apiKey,
-    model: settings.videoModel,
+    model: resolveVideoModel(settings.videoModel),
     duration: workspace.duration,
     resolution: workspace.resolution,
     aspect: workspace.aspect,
@@ -2767,8 +2769,8 @@ function renderVideoSizeMenu(card) {
   const audio = card.generate_audio !== false;
   const aspect = card.aspect || "auto";
   const videoAspects = ASPECT_OPTIONS.filter(option => ["auto", "16:9", "4:3", "1:1", "3:4", "9:16", "21:9"].includes(option.id));
-  const modernVideo = settings.provider !== "custom" && /^agnes-video-2\.5(?:-flash)?$/.test(resolveVideoModel(card.model));
-  const resolutions = modernVideo ? VIDEO_RESOLUTION_OPTIONS.filter(option => (resolveVideoModel(card.model).endsWith("-flash") ? ["720p"] : ["720p", "1080p", "2k"]).includes(option.id)) : VIDEO_RESOLUTION_OPTIONS;
+  const modernVideo = settings.provider !== "custom" && resolveVideoModel(card.model) === "agnes-video-2.5-flash";
+  const resolutions = modernVideo ? VIDEO_RESOLUTION_OPTIONS.filter(option => option.id === "720p") : VIDEO_RESOLUTION_OPTIONS;
   const durations = modernVideo ? VIDEO_DURATION_OPTIONS.filter(value => value <= 12) : VIDEO_DURATION_OPTIONS;
   return `<section class="size-section"><h3>分辨率</h3><div class="video-resolution-grid">${resolutions.map(option => `<button type="button" class="size-choice ${option.id === resolution ? "selected" : ""}" data-size-action="videoResolution" data-value="${escapeAttr(option.id)}">${escapeHtml(option.label)}</button>`).join("")}</div></section>
     <section class="size-section"><h3>生成时长</h3><div class="duration-grid">${durations.map(value => `<button type="button" class="size-choice ${value === duration ? "selected" : ""}" data-size-action="duration" data-value="${value}">${value}s</button>`).join("")}</div></section>
@@ -2778,7 +2780,7 @@ function renderVideoSizeMenu(card) {
 
 function sizePickerSummary(card) {
   if (card.type === "video") {
-    if (settings.provider === "agnes" && /^agnes-video-2\.5(?:-flash)?$/.test(resolveVideoModel(card.model))) return `${labelFor(VIDEO_RESOLUTION_OPTIONS, card.videoResolution, "720p")} / ${Number(card.duration || 5)}s / ${labelFor(ASPECT_OPTIONS, card.aspect, "auto")}`;
+    if (settings.provider === "agnes" && resolveVideoModel(card.model) === "agnes-video-2.5-flash") return `${labelFor(VIDEO_RESOLUTION_OPTIONS, card.videoResolution, "720p")} / ${Number(card.duration || 5)}s / ${labelFor(ASPECT_OPTIONS, card.aspect, "auto")}`;
     return `${labelFor(VIDEO_RESOLUTION_OPTIONS, card.videoResolution, "720p")} / ${Number(card.duration || 5)}s / ${card.generate_audio === false ? "否" : "是"} / ${labelFor(ASPECT_OPTIONS, card.aspect, "auto")}`;
   }
   return `${labelFor(ASPECT_OPTIONS, card.aspect, "auto")} / ${settings.provider === "agnes" ? "" : `${labelFor(IMAGE_QUALITY_OPTIONS, card.imageQuality, "medium")} / `}${labelFor(IMAGE_RESOLUTION_OPTIONS, card.imageResolution, "1k")}`;
@@ -2839,9 +2841,9 @@ function renderInspector() {
   els.videoFps.value = card.frame_rate || 24;
   els.negativePrompt.value = card.negative_prompt || "";
 
-  const modelOptions = card.type === "video" ? [...new Set([card.model, resolveVideoModel(settings.videoModel), "agnes-video-2.5-flash", "agnes-video-2.5"].filter(Boolean))] : ["agnes-image-2.1-flash", "agnes-image-2.0-flash"];
+  const modelOptions = card.type === "video" ? (settings.provider === "custom" ? [...new Set([card.model, settings.videoModel, "agnes-video-2.5-flash"].filter(Boolean))] : ["agnes-video-2.5-flash"]) : ["agnes-image-2.1-flash", "agnes-image-2.0-flash"];
   els.cardModel.innerHTML = modelOptions.map(model => `<option value="${escapeAttr(model)}">${escapeHtml(model)}</option>`).join("");
-  els.cardModel.value = card.model || modelOptions[0];
+  els.cardModel.value = card.type === "video" ? resolveVideoModel(card.model) : card.model || modelOptions[0];
 
   const upstream = incomingCards(card);
   const upstreamText = upstream.filter(isTextLike).length;
@@ -3902,6 +3904,10 @@ function importJson(event) {
 }
 
 function setupSettings() {
+  els.provider.addEventListener("change", () => {
+    els.videoModel.readOnly = els.provider.value !== "custom";
+    if (els.videoModel.readOnly) els.videoModel.value = "agnes-video-2.5-flash";
+  });
   document.getElementById("openSettings").addEventListener("click", () => { els.apiKey.value = getApiKey(); syncSettingsForm(); els.settingsModal.classList.remove("hidden"); });
   document.getElementById("closeSettings").addEventListener("click", () => els.settingsModal.classList.add("hidden"));
   document.getElementById("saveSettings").addEventListener("click", () => { collectSettings(); els.settingsModal.classList.add("hidden"); render(); });
@@ -4817,6 +4823,13 @@ async function generateAgnesImage(card, apiKey, prompt, originCanvasId) {
 
 async function generateAgnesVideo(card, apiKey, prompt, originCanvasId) {
   const originLibrary = canvasLibrary;
+  const previousDuration = Number(card.duration);
+  updateCard(card.id, {
+    model: "agnes-video-2.5-flash",
+    videoResolution: "720p",
+    duration: Number.isFinite(previousDuration) && previousDuration > 0 ? Math.min(12, Math.max(4, Math.round(previousDuration))) : 5,
+    size: sizeForVideo(card.aspect || "auto", "720p")
+  }, originCanvasId);
   const { width, height } = parseSize(card.size);
   const numFrames = normalizeVideoFrameCount(card.num_frames, durationToFrames(card.duration, card.frame_rate));
   if (card.num_frames !== numFrames) updateCard(card.id, { num_frames: numFrames }, originCanvasId);

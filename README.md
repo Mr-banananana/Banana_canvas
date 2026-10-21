@@ -8,7 +8,7 @@ Banana Canvas 是一个免费开源、本地优先的 AI 无限画布。用户�
 
 其他架构：[ARM64](https://github.com/Mr-banananana/Banana_canvas/releases/latest/download/Banana-Canvas-windows-arm64.zip) · [32 位 x86](https://github.com/Mr-banananana/Banana_canvas/releases/latest/download/Banana-Canvas-windows-x86.zip) · [版本公告与所有下载](https://github.com/Mr-banananana/Banana_canvas/releases/latest)。Windows 支持 10/11；Windows 7/8 不在支持范围内。AI 生成仍需要联网和自己的 API Key。
 
-**视频模型更新（v1.0.7）**：Agnes 已[退役 Video v2.0](https://wiki.agnes-ai.com/en/docs/agnes-video-v20)，项目默认迁移至 [Video 2.5 Flash](https://wiki.agnes-ai.com/en/docs/agnes-video-25-flash)（720P、4–12 秒）。已有任务保留原模型查询。新版参考图需要公网 HTTP(S) 图片链接，可在视频节点或产品视频工作台填写；本地/Base64 图片暂不支持。若出现 `model_not_found`，请核对密钥所属站点和模型权限，上游没有可用通道时需要服务商恢复。
+**视频模型更新（v1.0.9）**：内置 Agnes 视频生成仅保留 [Video 2.5 Flash](https://wiki.agnes-ai.com/zh-Hans/docs/agnes-video-25-flash)，已移除标准 2.5 收费版的生成入口，服务端也会拒绝标准版创建请求。旧设置及无任务节点自动迁移至 Flash（720P、4–12 秒、最多 5 张参考图）；已有任务按创建时的模型继续查询。参考图需要公网 HTTP(S) 图片链接，可在视频节点或产品视频工作台填写；本地/Base64 图片暂不支持。Flash 官方文档当前为限时免费，后续价格以服务商公告为准。详见[Flash 接入说明](docs/agnes-video-flash.md)。
 
 **生成兼容与排队（v1.0.8）**：修复图片接口不支持 `quality` 的 400 错误。视频队列满时尊重服务商冷却时间，默认按 60/120/240 秒最多重试三次；可点击“停止本次等待”。同一本地服务按站点和密钥协调提交，并保持至少 60 秒的创建间隔，避免多节点或标签页集中重发。持续失败时保留模型、站点及请求编号，便于服务商排查；不会自动切换付费模型。实际队列是否恢复取决于服务商。
 

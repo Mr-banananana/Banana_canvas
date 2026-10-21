@@ -32,14 +32,29 @@ tests.push(['Flash validates unsupported resolution, duration, aspect and image 
     const ctx=serverFixture({prompt:'test',...extra});await assert.rejects(ctx.handleAgnesVideo({},{}));assert.equal(ctx.url,undefined);
   }
 }]);
-tests.push(['standard 2.5 retains its resolution and old task polling retains its model',async()=>{
-  const ctx=serverFixture({prompt:'test',model:'agnes-video-2.5',resolution:'1080p'});await ctx.handleAgnesVideo({},{});assert.equal(ctx.body.size,'1080P');
-  const old=serverFixture({model:'agnes-video-v2.0',video_id:'old-video'});await old.handleAgnesVideoResult({},{});assert.match(old.url,/model_name=agnes-video-v2.0/);
+tests.push(['paid and unknown Agnes video models are rejected before any upstream submission',async()=>{
+  for(const model of ['agnes-video-2.5','private-model','AGNES-VIDEO-2.5']) {
+    const ctx=serverFixture({prompt:'test',model,resolution:'720p'});
+    await assert.rejects(ctx.handleAgnesVideo({},{}),error=>error.status===400 && /Flash/.test(error.message));
+    assert.equal(ctx.url,undefined);
+  }
+}]);
+tests.push(['existing retired and standard task polling preserves its original model',async()=>{
+  for(const model of ['agnes-video-v2.0','agnes-video-2.5']) {
+    const old=serverFixture({model,video_id:'old-video'});await old.handleAgnesVideoResult({},{});
+    assert.equal(new URL(old.url).searchParams.get('model_name'),model);assert.equal(old.body,null);
+  }
 }]);
 tests.push(['only new Agnes generations migrate, custom models and saved task models stay unchanged',async()=>{
   const ctx={settings:{provider:'agnes',videoModel:'agnes-video-v2.0'}};vm.createContext(ctx);vm.runInContext(extract(app,'resolveVideoModel'),ctx);
-  assert.equal(ctx.resolveVideoModel('agnes-video-v2.0'),'agnes-video-2.5-flash');assert.equal(ctx.resolveVideoModel('private-model'),'private-model');
-  ctx.settings.provider='custom';assert.equal(ctx.resolveVideoModel('agnes-video-v2.0'),'agnes-video-v2.0');
+  for(const model of ['agnes-video-v2.0','agnes-video-2.5','private-model','']) assert.equal(ctx.resolveVideoModel(model),'agnes-video-2.5-flash');
+  ctx.settings.provider='custom';
+  for(const model of ['agnes-video-v2.0','agnes-video-2.5','private-model']) assert.equal(ctx.resolveVideoModel(model),model);
+}]);
+tests.push(['Flash text request matches the documented field types and excludes obsolete options',async()=>{
+  const ctx=serverFixture({prompt:'cat',seconds:'5',size:'720P',aspect_ratio:'16:9',quality:'high',n:3});
+  await ctx.handleAgnesVideo({},{});
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.body)),{model:'agnes-video-2.5-flash',prompt:'cat',seconds:'5',size:'720P',aspect_ratio:'16:9',n:1,mode:'text'});
 }]);
 tests.push(['model_not_found becomes actionable and never triggers a generation retry',async()=>{
   const ctx={settings:{agnesRegion:'global'},flushLocalSave(){},fetch:async()=>({ok:false,status:503,json:async()=>({error:'Upstream API request failed.',details:{status:503,response:{error:{code:'model_not_found',message:'No available channel for model agnes-video-v2.0 under group default (distributor) (request id: abc123)'}}}})})};

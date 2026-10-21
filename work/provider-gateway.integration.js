@@ -22,6 +22,10 @@ const ctx=vm.createContext({require:name=>name==='http'?{...http,createServer:ha
   const post=async(endpoint,key='fixture-one')=>{const response=await fetch(base+endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({apiKey:`Bearer ${key}`,prompt:'product',model:endpoint.endsWith('image')?'agnes-image-2.1-flash':'agnes-video-2.5-flash',quality:'high'})});return {status:response.status,data:await response.json()};};
   assert.equal((await post('/api/agnes/image')).status,200);
   console.log('PASS HTTP: image request strips unsupported quality and normalizes Bearer input');
+  const beforePaid=upstreamCalls;
+  const paid=await fetch(base+'/api/agnes/video',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({apiKey:'fixture-paid',prompt:'product',model:'agnes-video-2.5'})});
+  assert.equal(paid.status,400);assert.match((await paid.json()).error,/Flash/);assert.equal(upstreamCalls,beforePaid);
+  console.log('PASS HTTP: paid standard video creation is rejected locally without any provider call');
   mode='queue';const first=await post('/api/agnes/video');assert.equal(first.status,503);assert.equal(first.data.retryAfterSeconds,240);assert.equal(first.data.requestId,'gateway-queue-proof');
   const before=upstreamCalls;const blocked=await post('/api/agnes/video');assert.equal(blocked.status,429);assert.equal(upstreamCalls,before);assert.equal(blocked.data.retryAfterSeconds,240);
   console.log('PASS HTTP: upstream HTTP-date cooldown is shared across separate requests without another provider POST');

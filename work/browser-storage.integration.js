@@ -144,6 +144,32 @@ async function waitFor(probe) {
       return {request:agnesImageRequest(image,'fixture-key','product'),menu:els.sizePickerMenu.innerHTML,summary:els.sizePickerButton.textContent};})()`);
     assert(!('quality'in imageUI.request));assert(!imageUI.menu.includes('data-size-action="imageQuality"'));assert(!imageUI.summary.includes('中'));
     console.log('PASS browser: Agnes image quality is absent from requests and hidden in generation controls');
+    const paidBackup={schema:2,activeCanvasId:'paid',settings:{provider:'agnes',videoModel:'agnes-video-2.5'},canvases:[{id:'paid',name:'paid',
+      cards:[{id:'paid-new',type:'video',model:'agnes-video-2.5',prompt:'cat',duration:15,videoResolution:'1080p'},
+        {id:'paid-task',type:'video',model:'agnes-video-2.5',task:{video_id:'existing-standard'},status:'running'}],
+      productVideoWorkspace:{status:'running',task:{video_id:'existing-standard-product'}}}]};
+    await cdp.evaluate(`importJson({target:{files:[new File([${JSON.stringify(JSON.stringify(paidBackup))}],'paid.json',{type:'application/json'})],value:'paid'}})`);
+    await waitFor(()=>cdp.evaluate(`canvasLibrary.activeCanvasId==='paid'`));
+    const paidMigration=await cdp.evaluate(`(()=>{selectSingle('paid-new');renderInspector();return {
+      setting:settings.videoModel,readOnly:els.videoModel.readOnly,model:findCard('paid-new').model,duration:findCard('paid-new').duration,
+      resolution:findCard('paid-new').videoResolution,options:[...els.cardModel.options].map(o=>o.value),
+      task:findCard('paid-task').task.model,product:state.productVideoWorkspace.task.model};})()`);
+    assert.deepEqual(paidMigration,{setting:'agnes-video-2.5-flash',readOnly:true,model:'agnes-video-2.5-flash',duration:12,resolution:'720p',
+      options:['agnes-video-2.5-flash'],task:'agnes-video-2.5',product:'agnes-video-2.5'});
+    console.log('PASS browser: paid settings and new nodes migrate to Flash while existing task queries retain their original model');
+    const providerToggle=await cdp.evaluate(`(()=>{els.provider.value='custom';els.provider.dispatchEvent(new Event('change'));
+      const editable=!els.videoModel.readOnly;els.videoModel.value='private-video';collectSettings();
+      const customModel=settings.videoModel;els.provider.value='agnes';els.provider.dispatchEvent(new Event('change'));collectSettings();
+      return {editable,customModel,readOnly:els.videoModel.readOnly,agnesModel:settings.videoModel};})()`);
+    assert.deepEqual(providerToggle,{editable:true,customModel:'private-video',readOnly:true,agnesModel:'agnes-video-2.5-flash'});
+    console.log('PASS browser: switching providers permits custom models and restores the Flash-only Agnes setting');
+    const regenerated=await cdp.evaluate(`(async()=>{const card=findCard('paid-task');card.task=null;card.model='agnes-video-2.5';card.duration=15;card.videoResolution='1080p';card.prompt='cat';
+      const original=window.fetch;let request;
+      window.fetch=async(url,options)=>{request=JSON.parse(options.body);return new Response(JSON.stringify({error:'test stop',details:{status:503,response:{code:'model_not_found',message:'test stop'}}}),{status:503,headers:{'content-type':'application/json'}});};
+      try {selectSingle(card.id);await generateSelected();return {model:request.model,resolution:request.resolution,duration:request.duration,storedModel:card.model,storedResolution:card.videoResolution};}
+      finally {window.fetch=original;}})()`);
+    assert.deepEqual(regenerated,{model:'agnes-video-2.5-flash',resolution:'720p',duration:12,storedModel:'agnes-video-2.5-flash',storedResolution:'720p'});
+    console.log('PASS browser: a finished standard task starts a new Flash generation with valid parameters without requiring a reload');
   } finally {
     if(cdp) {try{await cdp.send('Browser.close');}catch{}cdp.close();}
     if(edge)edge.kill();server.kill();

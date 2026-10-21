@@ -21,6 +21,9 @@ foreach ($architecture in $Architectures) {
   foreach ($name in @('server.js','launcher.js','public','start.bat','start.ps1','bootstrap-node.ps1','node-runtime.json','stop.bat','stop.ps1','package.json','README.md','CHANGELOG.md')) {
     Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination $bundle -Recurse -Force
   }
+  $bundleDocs = Join-Path $bundle 'docs'
+  New-Item -ItemType Directory -Path $bundleDocs -Force | Out-Null
+  Copy-Item -LiteralPath (Join-Path $projectRoot 'docs/agnes-video-flash.md') -Destination $bundleDocs
   foreach ($name in @('LICENSE','LICENSE.md','LICENSE.txt')) {
     if (Test-Path -LiteralPath (Join-Path $projectRoot $name)) { Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination $bundle }
   }
