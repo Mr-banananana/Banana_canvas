@@ -4,15 +4,6 @@ Banana Canvas 是一个免费开源、本地优先的 AI 无限画布。用户�
 
 > 如果这个项目对你有帮助，欢迎在右上角点个Star，支持项目持续维护。
 
-**Windows 推荐下载：[x64 便携版（大多数电脑）](https://github.com/Mr-banananana/Banana_canvas/releases/latest/download/Banana-Canvas-windows-x64.zip)**。已内置 Node.js，完整解压后双击 `start.bat`，无需安装开发环境或首次下载运行时。
-
-其他架构：[ARM64](https://github.com/Mr-banananana/Banana_canvas/releases/latest/download/Banana-Canvas-windows-arm64.zip) · [32 位 x86](https://github.com/Mr-banananana/Banana_canvas/releases/latest/download/Banana-Canvas-windows-x86.zip) · [版本公告与所有下载](https://github.com/Mr-banananana/Banana_canvas/releases/latest)。Windows 支持 10/11；Windows 7/8 不在支持范围内。AI 生成仍需要联网和自己的 API Key。
-
-**视频模型更新（v1.0.9）**：内置 Agnes 视频生成仅保留 [Video 2.5 Flash](https://wiki.agnes-ai.com/zh-Hans/docs/agnes-video-25-flash)，已移除标准 2.5 收费版的生成入口，服务端也会拒绝标准版创建请求。旧设置及无任务节点自动迁移至 Flash（720P、4–12 秒、最多 5 张参考图）；已有任务按创建时的模型继续查询。参考图需要公网 HTTP(S) 图片链接，可在视频节点或产品视频工作台填写；本地/Base64 图片暂不支持。Flash 官方文档当前为限时免费，后续价格以服务商公告为准。详见[Flash 接入说明](docs/agnes-video-flash.md)。
-
-**视频拥堵体验（v1.0.11）**：视频尚未受理时显示独立的“等待提交”提示，不再显示“生成中 8%”。显示已等待时长、尝试次数和下次提交倒计时；最多自动等待约 15 分钟，每次间隔至少 60 秒，并尊重上游更长的冷却要求。可停止等待、切换画布继续工作，刷新页面后不会自动重新提交。停止或等待结束会保留提示词和参考图；可复制或下载不含密钥、提示词和图片的诊断信息。实际能否受理取决于服务商容量。
-
-**视频响应修复（v1.0.10）**：按官方文档处理带 `error` 的 `status=failed` 任务查询，结束失败任务并保留原因；仅在 `status=completed` 时交付视频地址，避免把排队响应中的 URL 提前当作结果。创建前就被上游 `503 video_queue_full` 拒绝的请求仍需服务商恢复，更新本地程序不会获得额外通道容量。
 
 ## 核心特点
 
