@@ -4084,7 +4084,7 @@ function generationDiagnosticText(issue) {
   const seconds = Number.isFinite(Number(issue.elapsedMs)) ? Math.max(0, Math.round(Number(issue.elapsedMs) / 1000)) : 0;
   const timestamp = Number(issue.createdAt);
   return [
-    "Banana Canvas v1.0.12 · 生成连接诊断",
+    "Banana Canvas v1.0.13 · 生成连接诊断",
     `记录时间：${Number.isFinite(timestamp) && timestamp > 0 && timestamp <= 8640000000000000 ? new Date(timestamp).toISOString() : "未提供"}`,
     `服务站点：${issue.region === "china" ? "中国站 api.agnes-ai.cn" : issue.region === "global" ? "国际站 apihub.agnes-ai.com" : "自定义服务"}`,
     `模型：${safe(issue.model)}`, `错误码：${safe(issue.code)}`, `连接阶段：${safe(issue.phase)}`,
@@ -4164,7 +4164,7 @@ function videoQueueDiagnostic(queue, key) {
   const safeId = String(queue.requestId || "").match(/^[\w-]{1,128}$/)?.[0] || "未提供";
   const timestamp = Number(queue.updatedAt);
   return [
-    "Banana Canvas v1.0.12 · 视频提交诊断",
+    "Banana Canvas v1.0.13 · 视频提交诊断",
     `时间：${Number.isFinite(timestamp) && timestamp > 0 && timestamp <= 8640000000000000 ? new Date(timestamp).toISOString() : "未知"}`,
     `站点：${queue.region === "china" ? "中国站 api.agnes-ai.cn" : "国际站 apihub.agnes-ai.com"}`,
     "模型：agnes-video-2.5-flash",

@@ -238,7 +238,18 @@ function dispatchUpstreamRequest(transport, requestOptions, options, timeoutMs, 
       requestId = String(response.headers?.["x-request-id"] || response.headers?.["x-oneapi-request-id"] || response.headers?.["request-id"] || "").slice(0, 128);
       readResponse(response, result => finish(null, result), error => finish(error));
     });
-    const connected = () => { ready = true; phase = "awaiting_response"; clearTimeout(connectionTimer); };
+    const connected = () => {
+      if (ready || settled || request.destroyed) return;
+      // Do not buffer HTTP headers/body into a not-yet-ready TLS socket. Mark
+      // the request as possibly sent before the first application write.
+      ready = true;
+      phase = "awaiting_response";
+      clearTimeout(connectionTimer);
+      try {
+        if (options.body) request.write(options.body);
+        request.end();
+      } catch (error) { request.destroy(error); finish(error); }
+    };
     request.on("socket", socket => {
       if (encrypted) {
         phase = "tls_handshake";
@@ -250,8 +261,6 @@ function dispatchUpstreamRequest(transport, requestOptions, options, timeoutMs, 
     connectionTimer = setTimeout(() => request.destroy(Object.assign(new Error("Upstream connection timed out."), { code: "ETIMEDOUT" })), Math.min(timeoutMs, 30000));
     request.setTimeout(timeoutMs, () => request.destroy(Object.assign(new Error("Upstream response timed out."), { code: "ETIMEDOUT" })));
     request.on("error", error => finish(error));
-    if (options.body) request.write(options.body);
-    request.end();
   });
 }
 
