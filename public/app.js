@@ -2051,6 +2051,7 @@ function typeLabel(type) {
 }
 
 function statusLabel(card) {
+  if (card.status === "uncertain") return "结果未确认";
   if (card.type === "video" && card.videoQueue && !card.task) return videoQueueTitle(card.videoQueue, JSON.stringify(["node", canvasLibrary.activeCanvasId, card.id]));
   if (card.type === "video" && card.status === "running" && !card.task) return "提交中";
   if (card.status === "running") return "生成中";
@@ -2061,6 +2062,7 @@ function statusLabel(card) {
 }
 
 function statusClass(card) {
+  if (card.status === "uncertain") return "waiting";
   if (card.type === "video" && card.videoQueue && !card.task) return "waiting";
   if (card.status === "running" || card.status === "queued") return "running";
   if (card.status === "done") return "done";
@@ -2885,9 +2887,12 @@ function renderInspector() {
   els.statusBox.textContent = statusText;
   els.statusBox.classList.toggle("hidden", queueVisible);
   els.statusBox.classList.toggle("error", card.status === "error");
+  const diagnosticPanel = document.getElementById("generationDiagnostic");
+  diagnosticPanel.classList.toggle("hidden", !card.generationIssue);
+  if (card.generationIssue) diagnosticPanel.querySelector("textarea").value = generationDiagnosticText(card.generationIssue);
   const resultLink = safeResultLink(card.resultUrl);
   els.generateBtn.disabled = generationLocks.has(JSON.stringify(["node", canvasLibrary.activeCanvasId, card.id]));
-  els.generateBtn.querySelector("span").textContent = card.type === "video" && card.task ? "继续查询视频任务" : queueVisible ? generationLocks.has(JSON.stringify(["node", canvasLibrary.activeCanvasId, card.id])) ? "等待提交中" : "稍后重新尝试" : "生成资产";
+  els.generateBtn.querySelector("span").textContent = card.type === "video" && card.task ? "继续查询视频任务" : queueVisible ? generationLocks.has(JSON.stringify(["node", canvasLibrary.activeCanvasId, card.id])) ? "等待提交中" : "稍后重新尝试" : card.status === "uncertain" ? "核查后重新生成" : "生成资产";
   document.getElementById("cancelVideoWait").classList.toggle("hidden", card.type !== "video" || !videoSubmissionWaits.get(JSON.stringify(["node", canvasLibrary.activeCanvasId, card.id]))?.waiting);
   els.resultBox.innerHTML = resultLink ? `<a href="${escapeAttr(resultLink)}" target="_blank" rel="noreferrer">打开生成结果</a>` : card.resultUrl ? "结果已生成，无法作为网页链接直接打开。" : "";
   requestAnimationFrame(() => {
@@ -2957,6 +2962,12 @@ function setupSizePicker() {
 function bindInputs() {
   setupSizePicker();
   setupVideoQueuePanels();
+  document.getElementById("copyGenerationDiagnostic").addEventListener("click", async () => {
+    const field = document.querySelector("#generationDiagnostic textarea");
+    const feedback = document.querySelector("#generationDiagnostic [role=status]");
+    try { await navigator.clipboard.writeText(field.value); feedback.textContent = "诊断信息已复制，不包含密钥、提示词或参考图。"; }
+    catch { field.focus(); field.select(); feedback.textContent = "已选中文本，请按 Ctrl+C 复制。"; }
+  });
   document.getElementById("cancelVideoWait").addEventListener("click", () => {
     if (selectedCard()) cancelVideoQueueWait(JSON.stringify(["node", canvasLibrary.activeCanvasId, selectedCard().id]));
   });
@@ -3976,23 +3987,36 @@ function setupSupportModal() {
 
 async function postJson(url, body, { flushLocalState = true } = {}) {
   if (flushLocalState) flushLocalSave();
+  const startedAt = Date.now();
+  const isCreation = ["/api/agnes/image", "/api/agnes/video", "/api/agnes/prompt", "/api/custom"].includes(url);
+  const requestBody = url.startsWith("/api/agnes/")
+    ? { ...body, agnesRegion: body?.agnesRegion === "china" ? "china" : body?.agnesRegion === "global" ? "global" : settings.agnesRegion === "china" ? "china" : "global" }
+    : body;
+  const context = { provider: url === "/api/custom" ? "custom" : "agnes", operation: url === "/api/agnes/image" ? "image" : url === "/api/agnes/video" ? "video" : "other", agnesRegion: requestBody?.agnesRegion, model: body?.model };
   let response;
   try {
-    const requestBody = url.startsWith("/api/agnes/")
-      ? { ...body, agnesRegion: body?.agnesRegion === "china" ? "china" : body?.agnesRegion === "global" ? "global" : settings.agnesRegion === "china" ? "china" : "global" }
-      : body;
     response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requestBody) });
   } catch (cause) {
     const error = new Error("本地服务连接中断，请确认 Banana Canvas 服务仍在运行后重试。");
-    if (["/api/agnes/image", "/api/agnes/video", "/api/custom"].includes(url)) {
+    if (isCreation) {
       error.submissionUnknown = true;
       error.message += "生成请求的提交结果尚未确认，请先查看上游控制台，避免重复提交。";
     }
     error.networkCode = cause?.cause?.code || cause?.code || "LOCAL_SERVICE_UNAVAILABLE";
     error.retryable = true;
+    Object.assign(error, context, { networkPhase: "local_service", elapsedMs: Date.now() - startedAt });
     throw error;
   }
-  const data = await response.json().catch(() => ({}));
+  let data;
+  try {
+    data = await response.json();
+    if (!data || typeof data !== "object") throw new Error("Invalid local JSON response");
+  } catch {
+    const error = Object.assign(new Error(isCreation ? "本地响应读取中断或格式无效。生成结果尚未确认，请先核查服务商记录，避免重复提交。" : "本地响应读取中断或格式无效，请稍后继续查询。"), context, {
+      networkCode: "LOCAL_RESPONSE_INCOMPLETE", networkPhase: "local_response", elapsedMs: Date.now() - startedAt, submissionUnknown: isCreation
+    });
+    throw error;
+  }
   if (!response.ok || data.error) {
     const message = data.error || `HTTP ${response.status}`;
     const upstreamUnauthorized = Number(data.details?.status) === 401;
@@ -4008,6 +4032,7 @@ async function postJson(url, body, { flushLocalState = true } = {}) {
     error.networkCode = data.code || "";
     error.retryable = Boolean(data.retryable);
     error.submissionUnknown = Boolean(data.submissionUnknown);
+    Object.assign(error, context, { safeToRetry: Boolean(data.safeToRetry), networkPhase: data.networkPhase || "", elapsedMs: Number(data.elapsedMs || Date.now() - startedAt), networkAttempts: Number(data.networkAttempts || 1) });
     error.retryAfterSeconds = Number(data.retryAfterSeconds || data.details?.retryAfterSeconds || 0) || 0;
     error.requestId = data.requestId || String(error.upstreamMessage).match(/request id:\s*([\w-]{1,128})/i)?.[1] || "";
     error.waitReason = data.waitReason || "";
@@ -4017,7 +4042,7 @@ async function postJson(url, body, { flushLocalState = true } = {}) {
     if (isUpstreamTimeout(error)) error.message = "Agnes 上游响应超时，请稍后重试。";
     if (isUpstreamNetworkError(error)) error.message = upstreamNetworkMessage(error);
     if (isModelUnavailableError(error)) { error.message = modelUnavailableMessage(error, body); error.retryable = false; }
-    if (error.submissionUnknown) error.message = upstreamNetworkMessage(error);
+    if (error.submissionUnknown || error.safeToRetry) error.message = upstreamNetworkMessage(error);
     throw error;
   }
   return data;
@@ -4042,13 +4067,32 @@ function isUpstreamNetworkError(error) {
 }
 
 function upstreamNetworkMessage(error) {
-  if (error?.submissionUnknown) return "生成请求的提交结果未确认。请先查看 Agnes 控制台是否已有任务或结果，再决定是否重新生成，避免重复提交。";
-  const code = String(error?.networkCode || "");
+  const code = String(error?.networkCode || "NETWORK_ERROR").replace(/[^\w-]/g, "").slice(0, 64);
+  const seconds = Math.max(0, Math.round(Number(error?.elapsedMs || 0) / 1000));
+  const phase = ({ proxy_connect: "建立代理连接", connecting: "建立网络连接", tls_handshake: "建立安全连接", awaiting_response: "等待上游响应", response: "读取上游响应", local_service: "连接本地服务", local_response: "读取本地响应" })[error?.networkPhase] || "连接服务商";
+  if (error?.submissionUnknown) return `${error.operation === "image" ? "图片" : "生成"}请求的处理结果未确认：${phase}时中断（${code}${seconds ? `，已等待 ${seconds} 秒` : ""}）。提示词和参考图已保留。请先核查${error.provider === "custom" ? "服务商" : " Agnes "}用量/账单或联系其支持确认处理情况，再决定是否重新生成；不会自动重复提交。`;
+  if (error?.safeToRetry) return `尚未向上游发送生成请求：${phase}失败（${code}）。请检查网络或代理后重新生成；本次连接失败未创建上游任务。`;
   if (code === "ECONNRESET" || /网络连接被重置/i.test(String(error?.message || ""))) {
-    return "连接 Agnes 时出现网络波动，网络连接被重置。系统已自动重试；仍未成功，请稍后再次点击生成。";
+    return "连接 Agnes 时网络连接被重置。请检查代理或网络连接后重试。";
   }
-  if (code === "ETIMEDOUT") return "连接 Agnes 超时，系统已自动重试；仍未成功，请检查代理或网络后重试。";
-  return "暂时无法连接 Agnes，系统已自动重试；仍未成功，请检查网络或代理设置后重试。";
+  if (code === "ETIMEDOUT") return "连接 Agnes 超时，请检查代理或网络后重试。";
+  return "暂时无法连接 Agnes，请检查网络或代理设置后重试。";
+}
+
+function generationDiagnosticText(issue) {
+  const safe = value => String(value || "").match(/^[\w.-]{1,128}$/)?.[0] || "未提供";
+  const seconds = Number.isFinite(Number(issue.elapsedMs)) ? Math.max(0, Math.round(Number(issue.elapsedMs) / 1000)) : 0;
+  const timestamp = Number(issue.createdAt);
+  return [
+    "Banana Canvas v1.0.12 · 生成连接诊断",
+    `记录时间：${Number.isFinite(timestamp) && timestamp > 0 && timestamp <= 8640000000000000 ? new Date(timestamp).toISOString() : "未提供"}`,
+    `服务站点：${issue.region === "china" ? "中国站 api.agnes-ai.cn" : issue.region === "global" ? "国际站 apihub.agnes-ai.com" : "自定义服务"}`,
+    `模型：${safe(issue.model)}`, `错误码：${safe(issue.code)}`, `连接阶段：${safe(issue.phase)}`,
+    `耗时：${seconds} 秒`,
+    `请求编号：${safe(issue.requestId)}`,
+    `处理结果：${issue.submissionUnknown ? "请求可能已发出，但结果未确认；没有自动重发" : issue.safeToRetry ? "传输层确认未发出生成请求，可修复网络后重试" : "请结合错误原因核查"}`,
+    "不包含 API Key、提示词和参考图；请向服务商核查该请求的处理情况。"
+  ].join("\n");
 }
 
 function isContentPolicyViolation(error) {
@@ -4120,7 +4164,7 @@ function videoQueueDiagnostic(queue, key) {
   const safeId = String(queue.requestId || "").match(/^[\w-]{1,128}$/)?.[0] || "未提供";
   const timestamp = Number(queue.updatedAt);
   return [
-    "Banana Canvas v1.0.11 · 视频提交诊断",
+    "Banana Canvas v1.0.12 · 视频提交诊断",
     `时间：${Number.isFinite(timestamp) && timestamp > 0 && timestamp <= 8640000000000000 ? new Date(timestamp).toISOString() : "未知"}`,
     `站点：${queue.region === "china" ? "中国站 api.agnes-ai.cn" : "国际站 apihub.agnes-ai.com"}`,
     "模型：agnes-video-2.5-flash",
@@ -4288,19 +4332,9 @@ function upstreamTimeoutMessage() {
 }
 
 async function requestAgnesPrompt(body) {
-  try {
-    return await postJson("/api/agnes/prompt", body);
-  } catch (error) {
-    if (!isUpstreamTimeout(error) && !isUpstreamNetworkError(error)) throw error;
-    await sleep(isUpstreamNetworkError(error) ? 1000 : 1500);
-    try {
-      return await postJson("/api/agnes/prompt", body);
-    } catch (retryError) {
-      if (isUpstreamTimeout(retryError)) retryError.message = upstreamTimeoutMessage();
-      if (isUpstreamNetworkError(retryError)) retryError.message = upstreamNetworkMessage(retryError);
-      throw retryError;
-    }
-  }
+  // The server alone retries transport-confirmed pre-send failures. Never
+  // replay a chat POST here after an unknown result or a gateway timeout.
+  return postJson("/api/agnes/prompt", body);
 }
 
 function rateLimitMessage(delay) {
@@ -4920,7 +4954,7 @@ async function generateSelected() {
     }
     return;
   }
-  updateSelected({ status: "running", progress: card.type === "video" ? 0 : 8, error: "", videoQueue: null });
+  updateSelected({ status: "running", progress: card.type === "video" ? 0 : 8, error: "", videoQueue: null, generationIssue: null });
   try {
     if (settings.provider === "custom") await generateCustom(card, apiKey, prompt, originCanvasId);
     else if (card.type === "image") await generateAgnesImage(card, apiKey, prompt, originCanvasId);
@@ -4928,7 +4962,12 @@ async function generateSelected() {
   } catch (error) {
     if (originLibrary !== canvasLibrary) return;
     const queueEnded = ["VIDEO_WAIT_CANCELLED", "VIDEO_QUEUE_WAIT_ENDED"].includes(error.code);
-    updateCard(card.id, { status: queueEnded ? "idle" : "error", progress: 0, error: error.message, ...(queueEnded ? {} : { videoQueue: null }) }, originCanvasId);
+    const generationIssue = error.networkCode || error.submissionUnknown ? {
+      code: error.networkCode, phase: error.networkPhase, elapsedMs: error.elapsedMs, requestId: error.requestId, createdAt: Date.now(),
+      region: error.provider === "custom" ? "custom" : error.agnesRegion === "china" ? "china" : "global", model: error.model,
+      safeToRetry: error.safeToRetry === true, submissionUnknown: error.submissionUnknown === true
+    } : null;
+    updateCard(card.id, { status: queueEnded ? "idle" : error.submissionUnknown ? "uncertain" : "error", progress: 0, error: error.message, generationIssue, ...(queueEnded ? {} : { videoQueue: null }) }, originCanvasId);
   }
   } finally {
     generationLocks.delete(lockKey);

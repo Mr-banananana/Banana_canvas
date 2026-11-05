@@ -1,5 +1,6 @@
 const http = require("http");
 const https = require("https");
+const tls = require("tls");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
@@ -206,24 +207,61 @@ function readResponse(response, resolve, reject) {
     body: Buffer.concat(chunks).toString("utf8")
   }));
   response.on("error", reject);
+  response.on("aborted", () => reject(Object.assign(new Error("Upstream response was interrupted."), { code: "ECONNRESET" })));
+  response.on("close", () => {
+    if (!response.complete) reject(Object.assign(new Error("Upstream response ended before completion."), { code: "ECONNRESET" }));
+  });
 }
 
-function requestDirect(target, options, timeoutMs) {
+function dispatchUpstreamRequest(transport, requestOptions, options, timeoutMs, encrypted) {
   return new Promise((resolve, reject) => {
-    const transport = target.protocol === "https:" ? https : http;
-    const request = transport.request({
-      hostname: target.hostname,
-      port: target.port || undefined,
-      path: `${target.pathname}${target.search}`,
-      method: options.method || "GET",
-      headers: requestHeaders(options),
-      servername: target.hostname
-    }, response => readResponse(response, resolve, reject));
-    request.setTimeout(timeoutMs, () => request.destroy(new Error("Upstream request timed out.")));
-    request.on("error", reject);
+    let ready = false;
+    let settled = false;
+    let phase = "connecting";
+    let requestId = "";
+    let connectionTimer;
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(connectionTimer);
+      if (error) {
+        // false is only used when a TCP/TLS connection never became writable.
+        error.requestSent = ready;
+        error.networkPhase = phase;
+        error.requestId = requestId;
+        reject(error);
+      } else resolve(result);
+    };
+    const request = transport.request(requestOptions, response => {
+      ready = true;
+      phase = "response";
+      requestId = String(response.headers?.["x-request-id"] || response.headers?.["x-oneapi-request-id"] || response.headers?.["request-id"] || "").slice(0, 128);
+      readResponse(response, result => finish(null, result), error => finish(error));
+    });
+    const connected = () => { ready = true; phase = "awaiting_response"; clearTimeout(connectionTimer); };
+    request.on("socket", socket => {
+      if (encrypted) {
+        phase = "tls_handshake";
+        if (socket.encrypted && !socket.secureConnecting && socket.authorized) connected();
+        else socket.once("secureConnect", connected);
+      } else if (!socket.connecting) connected();
+      else socket.once("connect", connected);
+    });
+    connectionTimer = setTimeout(() => request.destroy(Object.assign(new Error("Upstream connection timed out."), { code: "ETIMEDOUT" })), Math.min(timeoutMs, 30000));
+    request.setTimeout(timeoutMs, () => request.destroy(Object.assign(new Error("Upstream response timed out."), { code: "ETIMEDOUT" })));
+    request.on("error", error => finish(error));
     if (options.body) request.write(options.body);
     request.end();
   });
+}
+
+function requestDirect(target, options, timeoutMs) {
+  const encrypted = target.protocol === "https:";
+  return dispatchUpstreamRequest(encrypted ? https : http, {
+    hostname: target.hostname, port: target.port || undefined,
+    path: `${target.pathname}${target.search}`, method: options.method || "GET",
+    headers: requestHeaders(options), servername: target.hostname
+  }, options, timeoutMs, encrypted);
 }
 
 function requestThroughProxy(target, proxy, options, timeoutMs) {
@@ -231,22 +269,14 @@ function requestThroughProxy(target, proxy, options, timeoutMs) {
   const proxyHeaders = { ...proxyAuthHeaders(proxy) };
   const method = options.method || "GET";
   if (target.protocol !== "https:") {
-    return new Promise((resolve, reject) => {
-      const request = proxyTransport.request({
-        hostname: proxy.hostname,
-        port: proxy.port || undefined,
-        path: target.toString(),
-        method,
-        headers: { ...requestHeaders(options), host: target.host, ...proxyHeaders }
-      }, response => readResponse(response, resolve, reject));
-      request.setTimeout(timeoutMs, () => request.destroy(new Error("Proxy request timed out.")));
-      request.on("error", reject);
-      if (options.body) request.write(options.body);
-      request.end();
-    });
+    return dispatchUpstreamRequest(proxyTransport, {
+      hostname: proxy.hostname, port: proxy.port || undefined, path: target.toString(), method,
+      headers: { ...requestHeaders(options), host: target.host, ...proxyHeaders }
+    }, options, timeoutMs, proxy.protocol === "https:");
   }
 
   return new Promise((resolve, reject) => {
+    let tunnelEstablished = false;
     const connect = proxyTransport.request({
       hostname: proxy.hostname,
       port: proxy.port || undefined,
@@ -254,29 +284,39 @@ function requestThroughProxy(target, proxy, options, timeoutMs) {
       path: `${target.hostname}:${target.port || 443}`,
       headers: { host: `${target.hostname}:${target.port || 443}`, "proxy-connection": "Keep-Alive", ...proxyHeaders }
     });
-    connect.setTimeout(timeoutMs, () => connect.destroy(new Error("Proxy CONNECT timed out.")));
-    connect.once("connect", (response, socket) => {
+    const connectFailure = error => {
+      if (tunnelEstablished) return;
+      clearTimeout(connectionTimer);
+      error.requestSent = false;
+      error.networkPhase = "proxy_connect";
+      reject(error);
+    };
+    const connectionTimer = setTimeout(() => connect.destroy(Object.assign(new Error("Proxy CONNECT timed out."), { code: "ETIMEDOUT" })), Math.min(timeoutMs, 30000));
+    connect.once("connect", (response, socket, head) => {
+      clearTimeout(connectionTimer);
+      connect.setTimeout(0);
       if (response.statusCode !== 200) {
         socket.destroy();
-        reject(new Error(`Proxy CONNECT failed with HTTP ${response.statusCode || 0}.`));
+        connectFailure(Object.assign(new Error(`Proxy CONNECT failed with HTTP ${response.statusCode || 0}.`), { code: response.statusCode === 407 ? "PROXY_AUTH_REQUIRED" : "PROXY_CONNECT_FAILED" }));
         return;
       }
-      const request = https.request({
+      tunnelEstablished = true;
+      if (head?.length) socket.unshift(head);
+      // Use the CONNECT socket for TLS; passing a `socket` request option with
+      // agent:false creates a new connection instead of using the tunnel.
+      const agent = new https.Agent({ keepAlive: false, maxSockets: 1 });
+      agent.createConnection = () => tls.connect({ socket, servername: target.hostname });
+      dispatchUpstreamRequest(https, {
         hostname: target.hostname,
         port: target.port || 443,
         path: `${target.pathname}${target.search}`,
         method,
         headers: requestHeaders(options),
-        socket,
-        agent: false,
+        agent,
         servername: target.hostname
-      }, result => readResponse(result, resolve, reject));
-      request.setTimeout(timeoutMs, () => request.destroy(new Error("Upstream request timed out.")));
-      request.on("error", reject);
-      if (options.body) request.write(options.body);
-      request.end();
+      }, options, timeoutMs, true).then(result => { agent.destroy(); resolve(result); }, error => { agent.destroy(); socket.destroy(); reject(error); });
     });
-    connect.on("error", reject);
+    connect.on("error", connectFailure);
     connect.end();
   });
 }
@@ -297,6 +337,8 @@ function parseRetryAfter(value, now = Date.now()) {
 
 async function fetchJson(url, options, timeoutMs = 360000, retryOptions = {}) {
   let response;
+  const startedAt = Date.now();
+  let attempts = 0;
   const networkRetries = Math.max(0, Number(retryOptions.networkRetries || 0));
   const target = new URL(url);
   const hasProxy = Boolean(proxyFor(target));
@@ -306,14 +348,21 @@ async function fetchJson(url, options, timeoutMs = 360000, retryOptions = {}) {
   const routes = [false, ...(directFallback ? [true] : []), ...Array(networkRetries).fill(false)];
   let lastCause = null;
   for (let routeIndex = 0; routeIndex < routes.length; routeIndex += 1) {
+    attempts += 1;
     try {
       response = await requestUpstream(url, options, timeoutMs, { bypassProxy: routes[routeIndex] });
       lastCause = null;
       break;
     } catch (cause) {
       lastCause = cause;
+      // Only a transport-confirmed pre-send failure permits retrying a POST.
+      // A reset during upload or response reading must never replay generation.
+      const canReplay = readOnly || cause.requestSent === false;
+      if (cause.requestSent === false && isTransientNetworkError(cause) && routes.length === 1) {
+        routes.push(hasProxy && retryOptions.directFallback !== false);
+      }
       const hasNextRoute = routeIndex < routes.length - 1;
-      if (isTransientNetworkError(cause) && hasNextRoute) {
+      if (canReplay && isTransientNetworkError(cause) && hasNextRoute) {
         const nextIsDirectFallback = directFallback && routeIndex === 0;
         const retryIndex = Math.max(0, routeIndex - (directFallback ? 1 : 0));
         const delayMs = nextIsDirectFallback ? 0 : Math.min(4000, 700 * (2 ** retryIndex));
@@ -325,15 +374,19 @@ async function fetchJson(url, options, timeoutMs = 360000, retryOptions = {}) {
   }
   if (!response) {
     const code = upstreamErrorCode(lastCause);
-    const attempts = routes.length;
     const error = new Error(isTransientNetworkError(lastCause)
       ? networkErrorMessage(code, attempts)
       : `无法连接 Agnes 上游（${code}）：${lastCause?.message || "网络请求失败"}`);
     error.cause = lastCause;
-    error.networkCode = isTransientNetworkError(lastCause) ? code : "";
+    error.networkCode = code;
     error.retryable = isTransientNetworkError(lastCause);
     error.networkAttempts = attempts;
-    error.submissionUnknown = !readOnly;
+    error.submissionUnknown = !readOnly && lastCause?.requestSent !== false;
+    error.safeToRetry = lastCause?.requestSent === false;
+    error.networkPhase = lastCause?.networkPhase || "unknown";
+    error.elapsedMs = Date.now() - startedAt;
+    error.requestId = lastCause?.requestId || undefined;
+    error.status = code === "ETIMEDOUT" ? 504 : 502;
     throw error;
   }
   const contentType = String(response.headers["content-type"] || "");
@@ -345,6 +398,13 @@ async function fetchJson(url, options, timeoutMs = 360000, retryOptions = {}) {
     } catch {
       data = text;
     }
+  }
+  if (response.status >= 200 && response.status < 300 && typeof data === "string") {
+    throw Object.assign(new Error("上游返回的 JSON 响应不完整或格式无效。"), {
+      status: 502, networkCode: "UPSTREAM_INVALID_RESPONSE", networkPhase: "response", elapsedMs: Date.now() - startedAt,
+      submissionUnknown: !readOnly, safeToRetry: readOnly,
+      requestId: String(response.headers["x-request-id"] || response.headers["x-oneapi-request-id"] || "").slice(0, 128) || undefined
+    });
   }
   // A queried video task can finish with status=failed and an error object in a
   // successful HTTP response. Preserve that terminal state for the caller.
@@ -360,7 +420,8 @@ async function fetchJson(url, options, timeoutMs = 360000, retryOptions = {}) {
     error.status = response.status >= 400 ? response.status : error.upstreamCode === "video_queue_full" ? 503 : 400;
     error.payload = { status: error.status, response: data };
     error.retryAfterSeconds = Math.max(parseRetryAfter(response.headers["retry-after"]), parseRetryAfter(data?.retry_after), parseRetryAfter(data?.error?.retry_after)) || undefined;
-    error.requestId = String(response.headers["x-request-id"] || response.headers["request-id"] || data?.request_id || data?.error?.request_id || String(data?.error?.message || "").match(/request id:\s*([\w-]{1,128})/i)?.[1] || "").slice(0,128);
+    error.requestId = String(response.headers["x-request-id"] || response.headers["x-oneapi-request-id"] || response.headers["request-id"] || data?.request_id || data?.error?.request_id || String(data?.error?.message || "").match(/request id:\s*([\w-]{1,128})/i)?.[1] || "").slice(0,128);
+    error.elapsedMs = Date.now() - startedAt;
     error.retryable = error.status === 503 && error.upstreamCode === "video_queue_full";
     throw error;
   }
@@ -530,7 +591,7 @@ async function handleAgnesPrompt(req, res) {
     method: "POST",
     headers: agnesHeaders(apiKey),
     body: JSON.stringify(body)
-  }, 360000, { networkRetries: 2, directFallback: true });
+  }, 360000, { directFallback: true });
   sendJson(res, 200, { ok: true, provider: "agnes", request: body, response: data });
 }
 
@@ -759,7 +820,11 @@ async function route(req, res) {
       retryAfterSeconds: error.retryAfterSeconds || undefined,
       requestId: error.requestId || undefined,
       waitReason: error.waitReason || undefined,
-      submissionUnknown: error.submissionUnknown || undefined
+      submissionUnknown: error.submissionUnknown || undefined,
+      safeToRetry: error.safeToRetry || undefined,
+      networkPhase: error.networkPhase || undefined,
+      elapsedMs: error.elapsedMs == null ? undefined : error.elapsedMs,
+      networkAttempts: error.networkAttempts || undefined
     });
   }
 }
