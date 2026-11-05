@@ -302,8 +302,8 @@ function requestThroughProxy(target, proxy, options, timeoutMs) {
       }
       tunnelEstablished = true;
       if (head?.length) socket.unshift(head);
-      // Use the CONNECT socket for TLS; passing a `socket` request option with
-      // agent:false creates a new connection instead of using the tunnel.
+      // Explicitly tie the TLS connection and its cleanup to this CONNECT
+      // tunnel with a dedicated, non-reusing Agent.
       const agent = new https.Agent({ keepAlive: false, maxSockets: 1 });
       agent.createConnection = () => tls.connect({ socket, servername: target.hostname });
       dispatchUpstreamRequest(https, {
