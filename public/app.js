@@ -440,10 +440,28 @@ function getApiKey() {
   return sessionStorage.getItem(API_KEY_SESSION) || "";
 }
 
+function normalizeApiKeyInput(value) {
+  const trimFormatting = input => input.replace(/^[\s\u200b-\u200f\u202a-\u202e\u2060-\u206f]+|[\s\u200b-\u200f\u202a-\u202e\u2060-\u206f]+$/g, "");
+  let key = trimFormatting(String(value || ""));
+  const quotePairs = { '"': '"', "'": "'", "`": "`", "\u201c": "\u201d", "\u2018": "\u2019" };
+  for (let pass = 0; pass < 3; pass += 1) {
+    if (key.length > 1 && quotePairs[key[0]] === key.at(-1)) key = trimFormatting(key.slice(1, -1));
+    key = trimFormatting(key.replace(/^Bearer\s+/i, ""));
+  }
+  return key;
+}
+
+function validateApiKeyField() {
+  const key = normalizeApiKeyInput(els.apiKey.value);
+  const message = /[^\x21-\x7e]/.test(key) ? "密钥中含中文、全角字符、内部空白或不可见字符，请从所选站点重新复制完整密钥。" : "";
+  els.apiKey.setCustomValidity(message);
+  els.apiKey.setAttribute("aria-invalid", String(Boolean(message)));
+  document.getElementById("apiKeyHint").textContent = message || "从所选站点复制完整密钥，不要包含中文说明或内部空格。";
+  return !message;
+}
+
 function setApiKey(value) {
-  let key = String(value || "").trim();
-  if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) key = key.slice(1, -1).trim();
-  key = key.replace(/^Bearer\s+/i, "").trim();
+  const key = normalizeApiKeyInput(value);
   if (key) sessionStorage.setItem(API_KEY_SESSION, key);
   else sessionStorage.removeItem(API_KEY_SESSION);
 }
@@ -2051,6 +2069,7 @@ function typeLabel(type) {
 }
 
 function statusLabel(card) {
+  if (card.status === "error" && card.generationIssue?.phase === "configuration") return "检查 API 配置";
   if (card.status === "uncertain") return "结果未确认";
   if (card.type === "video" && card.videoQueue && !card.task) return videoQueueTitle(card.videoQueue, JSON.stringify(["node", canvasLibrary.activeCanvasId, card.id]));
   if (card.type === "video" && card.status === "running" && !card.task) return "提交中";
@@ -3936,9 +3955,13 @@ function setupSettings() {
     els.videoModel.readOnly = els.provider.value !== "custom";
     if (els.videoModel.readOnly) els.videoModel.value = "agnes-video-2.5-flash";
   });
-  document.getElementById("openSettings").addEventListener("click", () => { els.apiKey.value = getApiKey(); syncSettingsForm(); els.settingsModal.classList.remove("hidden"); });
+  els.apiKey.addEventListener("input", validateApiKeyField);
+  document.getElementById("openSettings").addEventListener("click", () => { els.apiKey.value = getApiKey(); syncSettingsForm(); validateApiKeyField(); els.settingsModal.classList.remove("hidden"); });
   document.getElementById("closeSettings").addEventListener("click", () => els.settingsModal.classList.add("hidden"));
-  document.getElementById("saveSettings").addEventListener("click", () => { collectSettings(); els.settingsModal.classList.add("hidden"); render(); });
+  document.getElementById("saveSettings").addEventListener("click", () => {
+    if (!validateApiKeyField()) { els.apiKey.reportValidity(); return; }
+    collectSettings(); els.apiKey.value = getApiKey(); els.settingsModal.classList.add("hidden"); render();
+  });
   els.settingsModal.addEventListener("click", event => { if (event.target === els.settingsModal) els.settingsModal.classList.add("hidden"); });
 }
 
@@ -4042,7 +4065,7 @@ async function postJson(url, body, { flushLocalState = true } = {}) {
     if (isUpstreamTimeout(error)) error.message = "Agnes 上游响应超时，请稍后重试。";
     if (isUpstreamNetworkError(error)) error.message = upstreamNetworkMessage(error);
     if (isModelUnavailableError(error)) { error.message = modelUnavailableMessage(error, body); error.retryable = false; }
-    if (error.submissionUnknown || error.safeToRetry) error.message = upstreamNetworkMessage(error);
+    if (error.networkPhase !== "configuration" && (error.submissionUnknown || error.safeToRetry)) error.message = upstreamNetworkMessage(error);
     throw error;
   }
   return data;
@@ -4084,7 +4107,7 @@ function generationDiagnosticText(issue) {
   const seconds = Number.isFinite(Number(issue.elapsedMs)) ? Math.max(0, Math.round(Number(issue.elapsedMs) / 1000)) : 0;
   const timestamp = Number(issue.createdAt);
   return [
-    "Banana Canvas v1.0.13 · 生成连接诊断",
+    "Banana Canvas v1.0.14 · 生成连接诊断",
     `记录时间：${Number.isFinite(timestamp) && timestamp > 0 && timestamp <= 8640000000000000 ? new Date(timestamp).toISOString() : "未提供"}`,
     `服务站点：${issue.region === "china" ? "中国站 api.agnes-ai.cn" : issue.region === "global" ? "国际站 apihub.agnes-ai.com" : "自定义服务"}`,
     `模型：${safe(issue.model)}`, `错误码：${safe(issue.code)}`, `连接阶段：${safe(issue.phase)}`,
@@ -4164,7 +4187,7 @@ function videoQueueDiagnostic(queue, key) {
   const safeId = String(queue.requestId || "").match(/^[\w-]{1,128}$/)?.[0] || "未提供";
   const timestamp = Number(queue.updatedAt);
   return [
-    "Banana Canvas v1.0.13 · 视频提交诊断",
+    "Banana Canvas v1.0.14 · 视频提交诊断",
     `时间：${Number.isFinite(timestamp) && timestamp > 0 && timestamp <= 8640000000000000 ? new Date(timestamp).toISOString() : "未知"}`,
     `站点：${queue.region === "china" ? "中国站 api.agnes-ai.cn" : "国际站 apihub.agnes-ai.com"}`,
     "模型：agnes-video-2.5-flash",
@@ -4968,6 +4991,9 @@ async function generateSelected() {
       safeToRetry: error.safeToRetry === true, submissionUnknown: error.submissionUnknown === true
     } : null;
     updateCard(card.id, { status: queueEnded ? "idle" : error.submissionUnknown ? "uncertain" : "error", progress: 0, error: error.message, generationIssue, ...(queueEnded ? {} : { videoQueue: null }) }, originCanvasId);
+    if (error.networkCode === "INVALID_API_KEY_CHAR" && canvasLibrary.activeCanvasId === originCanvasId) {
+      validateApiKeyField(); els.settingsModal.classList.remove("hidden"); els.apiKey.focus(); els.apiKey.reportValidity();
+    }
   }
   } finally {
     generationLocks.delete(lockKey);

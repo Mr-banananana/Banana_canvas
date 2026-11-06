@@ -319,7 +319,8 @@
           </label>
           <label>
             API Key
-            <input id="apiKey" type="password" autocomplete="new-password" placeholder="Bearer token">
+            <input id="apiKey" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" aria-describedby="apiKeyHint" placeholder="粘贴完整 API Key">
+            <span id="apiKeyHint" class="field-hint" role="status">从所选站点复制完整密钥，不要包含中文说明或内部空格。</span>
           </label>
           <label>
             Agnes 服务站点（密钥所属站点）
@@ -497,7 +498,7 @@
       })();
     </script>
     <script src="/canvas-engine.js?v=canvas-interactions-5"></script>
-    <script src="/app.js?v=canvas-interactions-25"></script>
+    <script src="/app.js?v=canvas-interactions-26"></script>
   </body>
 </html>
 

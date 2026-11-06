@@ -128,15 +128,21 @@ function parseBody(req) {
 }
 
 function requireApiKey(payload) {
-  let apiKey = String(payload.apiKey || "").trim();
-  if ((apiKey.startsWith('"') && apiKey.endsWith('"')) || (apiKey.startsWith("'") && apiKey.endsWith("'"))) apiKey = apiKey.slice(1, -1).trim();
-  apiKey = apiKey.replace(/^Bearer\s+/i, "").trim();
+  const trimFormatting = value => value.replace(/^[\s\u200b-\u200f\u202a-\u202e\u2060-\u206f]+|[\s\u200b-\u200f\u202a-\u202e\u2060-\u206f]+$/g, "");
+  let apiKey = trimFormatting(String(payload.apiKey || ""));
+  const quotePairs = { '"': '"', "'": "'", "`": "`", "\u201c": "\u201d", "\u2018": "\u2019" };
+  for (let pass = 0; pass < 3; pass += 1) {
+    if (apiKey.length > 1 && quotePairs[apiKey[0]] === apiKey.at(-1)) apiKey = trimFormatting(apiKey.slice(1, -1));
+    apiKey = trimFormatting(apiKey.replace(/^Bearer\s+/i, ""));
+  }
   if (!apiKey) {
     const error = new Error("API Key is required.");
     error.status = 400;
     throw error;
   }
-  if (/\s|[\x00-\x1f\x7f]/.test(apiKey)) throw Object.assign(new Error("API Key 含内部空白或控制字符，请重新完整复制密钥。"), { status: 400 });
+  if (/[^\x21-\x7e]/.test(apiKey)) throw Object.assign(new Error("API Key 含中文、全角字符、内部空白或不可见字符。请从所选站点重新复制完整密钥，不要包含说明文字；请求尚未发送。"), {
+    status: 400, networkCode: "INVALID_API_KEY_CHAR", networkPhase: "configuration", requestSent: false, safeToRetry: true, submissionUnknown: false
+  });
   return apiKey;
 }
 
@@ -172,16 +178,34 @@ function proxyFor(target) {
 
 function proxyAuthHeaders(proxy) {
   if (!proxy.username && !proxy.password) return {};
-  const credentials = `${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`;
-  return { "proxy-authorization": `Basic ${Buffer.from(credentials).toString("base64")}` };
+  try {
+    const credentials = `${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`;
+    return { "proxy-authorization": `Basic ${Buffer.from(credentials).toString("base64")}` };
+  } catch {
+    throw Object.assign(new Error("代理认证配置的编码无效，请检查代理地址中的用户名和密码格式；请求尚未发送。"), {
+      status: 400, networkCode: "INVALID_PROXY_CONFIG", networkPhase: "configuration", requestSent: false, safeToRetry: true, submissionUnknown: false
+    });
+  }
 }
 
 function requestHeaders(options = {}) {
-  return { connection: "close", ...(options.headers || {}) };
+  const headers = { connection: "close", ...(options.headers || {}) };
+  for (const [name, value] of Object.entries(headers)) {
+    try {
+      http.validateHeaderName(name);
+      for (const item of Array.isArray(value) ? value : [value]) http.validateHeaderValue(name, item);
+    } catch {
+      const field = name.toLowerCase() === "authorization" ? "API Key / Authorization" : name.toLowerCase() === "proxy-authorization" ? "代理认证" : "自定义请求头";
+      throw Object.assign(new Error(`${field}包含无效字符或格式，请修正配置后重试；请求尚未发送。`), {
+        status: 400, networkCode: "INVALID_REQUEST_HEADER", networkPhase: "configuration", requestSent: false, safeToRetry: true, submissionUnknown: false
+      });
+    }
+  }
+  return headers;
 }
 
 function upstreamErrorCode(error) {
-  return error?.code || error?.cause?.code || error?.cause?.cause?.code || "NETWORK_ERROR";
+  return error?.networkCode || error?.code || error?.cause?.code || error?.cause?.cause?.code || "NETWORK_ERROR";
 }
 
 function isTransientNetworkError(error) {
@@ -232,12 +256,19 @@ function dispatchUpstreamRequest(transport, requestOptions, options, timeoutMs, 
         reject(error);
       } else resolve(result);
     };
-    const request = transport.request(requestOptions, response => {
+    let request;
+    try { request = transport.request(requestOptions, response => {
       ready = true;
       phase = "response";
       requestId = String(response.headers?.["x-request-id"] || response.headers?.["x-oneapi-request-id"] || response.headers?.["request-id"] || "").slice(0, 128);
       readResponse(response, result => finish(null, result), error => finish(error));
-    });
+    }); } catch (error) {
+      phase = "configuration";
+      error.status = 400;
+      error.message = "请求配置无法创建，请检查 API Key、请求头及代理配置；请求尚未发送。";
+      finish(error);
+      return;
+    }
     const connected = () => {
       if (ready || settled || request.destroyed) return;
       // Do not buffer HTTP headers/body into a not-yet-ready TLS socket. Mark
@@ -276,11 +307,14 @@ function requestDirect(target, options, timeoutMs) {
 function requestThroughProxy(target, proxy, options, timeoutMs) {
   const proxyTransport = proxy.protocol === "https:" ? https : http;
   const proxyHeaders = { ...proxyAuthHeaders(proxy) };
+  // Validate before opening CONNECT; never throw validation errors from its
+  // asynchronous event callback or send invalid credentials to a proxy.
+  const targetHeaders = requestHeaders(options);
   const method = options.method || "GET";
   if (target.protocol !== "https:") {
     return dispatchUpstreamRequest(proxyTransport, {
       hostname: proxy.hostname, port: proxy.port || undefined, path: target.toString(), method,
-      headers: { ...requestHeaders(options), host: target.host, ...proxyHeaders }
+      headers: { ...targetHeaders, host: target.host, ...proxyHeaders }
     }, options, timeoutMs, proxy.protocol === "https:");
   }
 
@@ -320,7 +354,7 @@ function requestThroughProxy(target, proxy, options, timeoutMs) {
         port: target.port || 443,
         path: `${target.pathname}${target.search}`,
         method,
-        headers: requestHeaders(options),
+        headers: targetHeaders,
         agent,
         servername: target.hostname
       }, options, timeoutMs, true).then(result => { agent.destroy(); resolve(result); }, error => { agent.destroy(); socket.destroy(); reject(error); });
@@ -396,6 +430,11 @@ async function fetchJson(url, options, timeoutMs = 360000, retryOptions = {}) {
     error.elapsedMs = Date.now() - startedAt;
     error.requestId = lastCause?.requestId || undefined;
     error.status = code === "ETIMEDOUT" ? 504 : 502;
+    if (lastCause?.networkPhase === "configuration" && lastCause?.requestSent === false) {
+      error.status = 400;
+      error.message = lastCause.message;
+      error.retryable = false;
+    }
     throw error;
   }
   const contentType = String(response.headers["content-type"] || "");
