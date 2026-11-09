@@ -2069,6 +2069,7 @@ function typeLabel(type) {
 }
 
 function statusLabel(card) {
+  if (card.status === "error" && card.generationIssue?.phase === "upstream_auth") return "鉴权被拒绝";
   if (card.status === "error" && card.generationIssue?.phase === "configuration") return "检查 API 配置";
   if (card.status === "uncertain") return "结果未确认";
   if (card.type === "video" && card.videoQueue && !card.task) return videoQueueTitle(card.videoQueue, JSON.stringify(["node", canvasLibrary.activeCanvasId, card.id]));
@@ -4060,12 +4061,19 @@ async function postJson(url, body, { flushLocalState = true } = {}) {
     error.requestId = data.requestId || String(error.upstreamMessage).match(/request id:\s*([\w-]{1,128})/i)?.[1] || "";
     error.waitReason = data.waitReason || "";
     if (upstreamUnauthorized) {
-      error.message = "Agnes API Key 验证失败（401）。请确认“Agnes 服务站点”与密钥所属站点一致，并检查密钥是否有效；可在对应 Agnes 控制台重新创建密钥后再试。不要把 API Key 发给他人。";
+      const site = context.provider === "custom" ? "自定义服务" : context.agnesRegion === "china" ? "中国站 api.agnes-ai.cn" : "国际站 apihub.agnes-ai.com";
+      const authDetail = `${error.upstreamCode} ${error.upstreamMessage}`;
+      error.authReason = /expired/i.test(authDetail) ? "expired" : /revoked|disabled/i.test(authDetail) ? "inactive" : /invalid[ _-]*(?:api[ _-]*)?(?:token|key)/i.test(authDetail) ? "invalid_token" : "unspecified";
+      error.networkPhase = "upstream_auth";
+      error.retryable = false;
+      error.message = `${site}的当前请求返回 401，认证被拒绝。请先核对密钥所属站点及有效状态；同站点重新复制后仍失败，可复制下方请求诊断信息交给服务商核查账号与转发通道。此状态码本身不能确定故障位于哪一方。`;
     }
-    if (isUpstreamTimeout(error)) error.message = "Agnes 上游响应超时，请稍后重试。";
-    if (isUpstreamNetworkError(error)) error.message = upstreamNetworkMessage(error);
-    if (isModelUnavailableError(error)) { error.message = modelUnavailableMessage(error, body); error.retryable = false; }
-    if (error.networkPhase !== "configuration" && (error.submissionUnknown || error.safeToRetry)) error.message = upstreamNetworkMessage(error);
+    if (!upstreamUnauthorized) {
+      if (isUpstreamTimeout(error)) error.message = "Agnes 上游响应超时，请稍后重试。";
+      if (isUpstreamNetworkError(error)) error.message = upstreamNetworkMessage(error);
+      if (isModelUnavailableError(error)) { error.message = modelUnavailableMessage(error, body); error.retryable = false; }
+      if (error.networkPhase !== "configuration" && (error.submissionUnknown || error.safeToRetry)) error.message = upstreamNetworkMessage(error);
+    }
     throw error;
   }
   return data;
@@ -4107,13 +4115,15 @@ function generationDiagnosticText(issue) {
   const seconds = Number.isFinite(Number(issue.elapsedMs)) ? Math.max(0, Math.round(Number(issue.elapsedMs) / 1000)) : 0;
   const timestamp = Number(issue.createdAt);
   return [
-    "Banana Canvas v1.0.14 · 生成连接诊断",
+    "Banana Canvas v1.0.15 · 生成请求诊断",
     `记录时间：${Number.isFinite(timestamp) && timestamp > 0 && timestamp <= 8640000000000000 ? new Date(timestamp).toISOString() : "未提供"}`,
     `服务站点：${issue.region === "china" ? "中国站 api.agnes-ai.cn" : issue.region === "global" ? "国际站 apihub.agnes-ai.com" : "自定义服务"}`,
     `模型：${safe(issue.model)}`, `错误码：${safe(issue.code)}`, `连接阶段：${safe(issue.phase)}`,
+    `上游 HTTP 状态：${Number.isInteger(Number(issue.status)) && Number(issue.status) >= 400 && Number(issue.status) <= 599 ? Number(issue.status) : "未提供"}`,
+    ...(Number(issue.status) === 401 ? [`上游认证提示：${({ expired: "认证已过期", inactive: "认证已停用或撤销", invalid_token: "令牌无效", unspecified: "未提供可细分的认证原因" })[issue.authReason] || "未提供可细分的认证原因"}（不据此判定凭据属于哪一方）`] : []),
     `耗时：${seconds} 秒`,
     `请求编号：${safe(issue.requestId)}`,
-    `处理结果：${issue.submissionUnknown ? "请求可能已发出，但结果未确认；没有自动重发" : issue.safeToRetry ? "传输层确认未发出生成请求，可修复网络后重试" : "请结合错误原因核查"}`,
+    `处理结果：${Number(issue.status) === 401 ? "上游拒绝本次认证；请核查当前站点的密钥、账号及转发通道，没有自动跨站切换或重新提交" : issue.submissionUnknown ? "请求可能已发出，但结果未确认；没有自动重发" : issue.safeToRetry ? "传输层确认未发出生成请求，可修复网络后重试" : "请结合错误原因核查"}`,
     "不包含 API Key、提示词和参考图；请向服务商核查该请求的处理情况。"
   ].join("\n");
 }
@@ -4187,7 +4197,7 @@ function videoQueueDiagnostic(queue, key) {
   const safeId = String(queue.requestId || "").match(/^[\w-]{1,128}$/)?.[0] || "未提供";
   const timestamp = Number(queue.updatedAt);
   return [
-    "Banana Canvas v1.0.14 · 视频提交诊断",
+    "Banana Canvas v1.0.15 · 视频提交诊断",
     `时间：${Number.isFinite(timestamp) && timestamp > 0 && timestamp <= 8640000000000000 ? new Date(timestamp).toISOString() : "未知"}`,
     `站点：${queue.region === "china" ? "中国站 api.agnes-ai.cn" : "国际站 apihub.agnes-ai.com"}`,
     "模型：agnes-video-2.5-flash",
@@ -4985,8 +4995,9 @@ async function generateSelected() {
   } catch (error) {
     if (originLibrary !== canvasLibrary) return;
     const queueEnded = ["VIDEO_WAIT_CANCELLED", "VIDEO_QUEUE_WAIT_ENDED"].includes(error.code);
-    const generationIssue = error.networkCode || error.submissionUnknown ? {
-      code: error.networkCode, phase: error.networkPhase, elapsedMs: error.elapsedMs, requestId: error.requestId, createdAt: Date.now(),
+    const generationIssue = error.networkCode || error.submissionUnknown || Number(error.upstreamStatus) >= 400 ? {
+      code: error.networkCode || error.upstreamCode || `HTTP_${error.upstreamStatus}`, phase: error.networkPhase || "upstream_response", elapsedMs: error.elapsedMs, requestId: error.requestId, createdAt: Date.now(),
+      status: error.upstreamStatus, authReason: error.authReason,
       region: error.provider === "custom" ? "custom" : error.agnesRegion === "china" ? "china" : "global", model: error.model,
       safeToRetry: error.safeToRetry === true, submissionUnknown: error.submissionUnknown === true
     } : null;
